@@ -1,0 +1,6 @@
+{
+  "name": "Тайский фразовик",
+  "description": "Тренажер разговорного тайского языка с практической русской транскрипцией, интервальным повторением SRS и проверкой произношения.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
