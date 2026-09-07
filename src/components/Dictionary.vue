@@ -144,7 +144,8 @@ function playWordAudio(item) {
   if (!item || !item.thai_hidden) return;
   playingId.value = item.id;
   speechService.speakThai(item.thai_hidden, {
-    rate: 0.78,
+    rate: Number(store.settings?.playbackRate) || 0.7,
+    gender: store.userGender,
     onStart: () => {
       playingId.value = item.id;
     },

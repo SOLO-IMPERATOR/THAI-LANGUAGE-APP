@@ -174,6 +174,15 @@
                     </template>
                   </span>
 
+                  <!-- Gender particle badge -->
+                  <span
+                    v-if="user.gender"
+                    class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600"
+                    :title="user.gender === 'female' ? 'Говорит с вежливой частицей кха̂ (жен.)' : 'Говорит с вежливой частицей кхра́п (муж.)'"
+                  >
+                    {{ user.gender === 'female' ? '👩 кха' : '👨 кхап' }}
+                  </span>
+
                   <!-- Badge if current user -->
                   <span
                     v-if="isCurrentUser(user.id)"

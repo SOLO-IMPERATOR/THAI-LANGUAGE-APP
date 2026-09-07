@@ -48,47 +48,47 @@ export async function initDatabase() {
 
   try {
     const count = await db.phrases.count();
-    if (count === 0) {
-      await db.phrases.bulkAdd(INITIAL_PHRASES);
-    } else if (count < 500) {
-      // Import the full 1000 phrases without duplicates
-      const existing = await db.phrases.toArray();
-      const existingThaiSet = new Set(existing.map((p) => p.thai_hidden));
+    const existingPhrases = count > 0 ? await db.phrases.toArray() : [];
+    
+    // Check if re-sync to canonical 900 phrases is needed
+    const needsResync = count !== INITIAL_PHRASES.length ||
+      existingPhrases.some((p) => !p.female || !p.male || (p.russian && p.russian.includes('Полезная разговорная фраза')));
 
-      const newPhrasesToAdd = INITIAL_PHRASES.filter((p) => !existingThaiSet.has(p.thai_hidden)).map((p) => ({
-        ...p,
-        stage_srs: 0,
-        review_count: 0,
-        next_review: 0,
-        is_deconstructed: 0
-      }));
-
-      if (newPhrasesToAdd.length > 0) {
-        await db.phrases.bulkAdd(newPhrasesToAdd);
-      }
-    } else {
-      // Migration: ensure all existing phrases have tags & review_count
-      const existingPhrases = await db.phrases.toArray();
-      for (const p of existingPhrases) {
-        let needsUpdate = false;
-        const patch = {};
-
-        if (!p.tags || !Array.isArray(p.tags) || p.tags.length === 0) {
-          const seedMatch = INITIAL_PHRASES.find((s) => s.thai_hidden === p.thai_hidden);
-          patch.tags = seedMatch?.tags || ['разговорный', 'базовое'];
-          needsUpdate = true;
+    if (count === 0 || needsResync) {
+      // Map existing learning progress by Russian key to preserve SRS stats
+      const progressMap = new Map();
+      existingPhrases.forEach((p) => {
+        const key = (p.russian || p.translation_ru || '').trim().toLowerCase();
+        if (key) {
+          progressMap.set(key, {
+            stage_srs: p.stage_srs || 0,
+            review_count: p.review_count || 0,
+            next_review: p.next_review || 0,
+            is_deconstructed: p.is_deconstructed || 0,
+            tags: p.tags
+          });
         }
+      });
 
-        if (p.review_count === undefined) {
-          patch.review_count = Number(p.stage_srs) || 0;
-          needsUpdate = true;
-        }
+      const canonical900 = INITIAL_PHRASES.map((p, idx) => {
+        const key = (p.russian || p.translation_ru || '').trim().toLowerCase();
+        const saved = progressMap.get(key);
+        return {
+          ...p,
+          id: idx + 1,
+          stage_srs: saved ? saved.stage_srs : (p.stage_srs || 0),
+          review_count: saved ? saved.review_count : (p.review_count || 0),
+          next_review: saved ? saved.next_review : (p.next_review || 0),
+          is_deconstructed: saved ? saved.is_deconstructed : (p.is_deconstructed || 0),
+          tags: (saved && saved.tags && saved.tags.length > 0) ? saved.tags : (p.tags || ['разговорный', 'базовое'])
+        };
+      });
 
-        if (needsUpdate) {
-          await db.phrases.update(p.id, patch);
-        }
-      }
+      await db.phrases.clear();
+      await db.phrases.bulkAdd(canonical900);
+      console.log(`Synchronized database with ${canonical900.length} canonical phrases.`);
     }
+
 
     // Ensure default settings exist
     const defaultSettings = [
@@ -96,7 +96,8 @@ export async function initDatabase() {
       { key: 'trainingMode', value: 'mix' }, // 'new' | 'review' | 'mix'
       { key: 'reminderHour', value: 10 },
       { key: 'reminderMinute', value: 0 },
-      { key: 'notificationsEnabled', value: false }
+      { key: 'notificationsEnabled', value: false },
+      { key: 'playbackRate', value: 0.7 }
     ];
 
     for (const s of defaultSettings) {

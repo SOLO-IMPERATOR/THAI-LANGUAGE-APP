@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { db, initDatabase, INITIAL_PHRASES } from './db.js';
+import { getGenderedPhrase } from './phrasesData.js';
 
 // SRS Interval map in milliseconds per user specification:
 // Day 3 -> Day 5 -> Day 7 (week) -> Day 14 (2 weeks) -> Day 30 (month)
@@ -15,12 +16,14 @@ export const useLearningStore = defineStore('learning', {
   state: () => ({
     phrases: [],
     dictionaryWords: [],
+    userGender: typeof localStorage !== 'undefined' ? (localStorage.getItem('thai_frazovik_gender') || 'male') : 'male',
     settings: {
       dailyGoal: 5,
       trainingMode: 'mix', // 'new' | 'review' | 'mix'
       reminderHour: 10,
       reminderMinute: 0,
-      notificationsEnabled: false
+      notificationsEnabled: false,
+      playbackRate: typeof localStorage !== 'undefined' ? (parseFloat(localStorage.getItem('thai_frazovik_speed')) || 0.7) : 0.7
     },
     // Active training session queue
     sessionQueue: [],
@@ -43,7 +46,8 @@ export const useLearningStore = defineStore('learning', {
     currentPhrase: (state) => {
       if (state.sessionQueue.length === 0) return null;
       if (state.currentSessionIndex >= state.sessionQueue.length) return null;
-      return state.sessionQueue[state.currentSessionIndex];
+      const raw = state.sessionQueue[state.currentSessionIndex];
+      return getGenderedPhrase(raw, state.userGender);
     },
 
     isSessionComplete: (state) => {
@@ -198,6 +202,11 @@ export const useLearningStore = defineStore('learning', {
 
           const savedNotif = await db.settings.get('notificationsEnabled');
           if (savedNotif) this.settings.notificationsEnabled = Boolean(savedNotif.value);
+
+          const savedRate = await db.settings.get('playbackRate');
+          if (savedRate && savedRate.value !== undefined) {
+            this.settings.playbackRate = Number(savedRate.value) || 0.7;
+          }
         }
       } catch (err) {
         console.warn('Dexie settings read error, using defaults:', err);
@@ -224,10 +233,31 @@ export const useLearningStore = defineStore('learning', {
       }
     },
 
+    setPlaybackRate(rate) {
+      const validRates = [0.5, 0.7, 1.0, 1.2];
+      const num = Number(rate);
+      const target = validRates.includes(num) ? num : (validRates.find(r => Math.abs(r - num) < 0.05) || 0.7);
+      this.settings.playbackRate = target;
+      try {
+        localStorage.setItem('thai_frazovik_speed', String(target));
+      } catch (e) {}
+      this.updateSetting('playbackRate', target);
+    },
+
+    setUserGender(gender) {
+      if (gender === 'male' || gender === 'female') {
+        this.userGender = gender;
+        try {
+          localStorage.setItem('thai_frazovik_gender', gender);
+        } catch (e) {}
+      }
+    },
+
     /**
      * Build active session queue based on filters and mode:
      * - Filters: Category & Tag
      * - Mode: 'new', 'review', or 'mix'
+     * - Guarantee: phrases never repeat within the queue and prioritize unstudied phrases!
      */
     startNewSession() {
       const now = Date.now();
@@ -282,8 +312,29 @@ export const useLearningStore = defineStore('learning', {
         queue = availablePhrases.slice(0, goal);
       }
 
-      this.sessionQueue = queue;
-      this.lastCompletedSession = [...queue];
+      // Deduplicate queue so that phrases never repeat!
+      const seen = new Set();
+      const uniqueQueue = [];
+      for (const p of queue) {
+        if (!seen.has(p.id)) {
+          seen.add(p.id);
+          uniqueQueue.push(p);
+        }
+      }
+
+      // If still fewer than goal, fill from remaining available phrases
+      if (uniqueQueue.length < goal && availablePhrases.length > uniqueQueue.length) {
+        for (const p of availablePhrases) {
+          if (!seen.has(p.id)) {
+            seen.add(p.id);
+            uniqueQueue.push(p);
+            if (uniqueQueue.length >= goal) break;
+          }
+        }
+      }
+
+      this.sessionQueue = uniqueQueue;
+      this.lastCompletedSession = [...uniqueQueue];
       this.currentSessionIndex = 0;
       this.sessionStats.completedCount = 0;
     },

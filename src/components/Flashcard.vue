@@ -15,6 +15,28 @@
               {{ phrase.category }}
             </span>
 
+            <!-- Quick Gender Switcher (Kha / Khap) -->
+            <div class="inline-flex items-center p-0.5 bg-slate-100 rounded-xl border border-slate-200 flex-shrink-0">
+              <button
+                @click="setGender('male')"
+                type="button"
+                class="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-lg transition"
+                :class="store.userGender === 'male' ? 'bg-white text-indigo-700 shadow-xs font-black' : 'text-slate-500 hover:text-slate-800'"
+                title="Мужской вариант: вежливая частица кхра́п / кхап (ครับ)"
+              >
+                👨 кхап
+              </button>
+              <button
+                @click="setGender('female')"
+                type="button"
+                class="text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-lg transition"
+                :class="store.userGender === 'female' ? 'bg-white text-rose-700 shadow-xs font-black' : 'text-slate-500 hover:text-slate-800'"
+                title="Женский вариант: вежливая частица кха̂ / кха́ (ค่ะ / คะ)"
+              >
+                👩 кха
+              </button>
+            </div>
+
             <!-- Phrase Tags (Contained and truncated so they do not stretch mobile) -->
             <span
               v-for="tag in phrase.tags || []"
@@ -123,14 +145,14 @@
 
       <!-- Card Main Body -->
       <div class="my-auto py-5 flex flex-col items-center text-center w-full">
-        <!-- Audio Playback Buttons: Primary Indigo Circle + 0.7x Pill -->
-        <div class="flex items-center gap-3 mb-5">
+        <!-- Audio Playback Controls: Primary Circle Button + Speed Switcher (0.5x, 0.7x, 1.0x, 1.2x) -->
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-5">
           <!-- Main Play Button -->
           <button
-            @click="playAudio(0.85)"
+            @click="playAudio()"
             :disabled="isPlayingAudio"
-            class="relative flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 hover:scale-105 active:scale-95 transition-all disabled:opacity-75 focus:outline-none focus:ring-4 focus:ring-indigo-100 shadow-sm"
-            title="Воспроизвести эталонную тайскую речь (Web Speech API)"
+            class="relative flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100 hover:scale-105 active:scale-95 transition-all disabled:opacity-75 focus:outline-none focus:ring-4 focus:ring-indigo-100 shadow-sm cursor-pointer"
+            :title="`Воспроизвести речь на выбранной скорости (${currentSpeed}×)`"
             type="button"
           >
             <span
@@ -156,19 +178,28 @@
             </svg>
           </button>
 
-          <!-- Slow Play Button (0.7x) -->
-          <button
-            @click="playAudio(0.68)"
-            :disabled="isPlayingAudio"
-            class="px-3.5 py-2 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition flex items-center gap-1.5 active:scale-95 shadow-xs"
-            title="Замедленная речь (0.7x) для четкого разбора тонов"
-            type="button"
-          >
-            <svg class="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span>0.7×</span>
-          </button>
+          <!-- Interactive Speed Selector Pill Group (0.5x, 0.7x, 1.0x, 1.2x) -->
+          <div class="inline-flex items-center p-1 bg-slate-100/90 rounded-2xl border border-slate-200/90 shadow-2xs">
+            <span class="px-2 text-[10px] font-black uppercase text-slate-400 tracking-wider hidden xs:inline">
+              Скорость
+            </span>
+            <button
+              v-for="speed in speedOptions"
+              :key="speed"
+              @click="setSpeedAndPlay(speed)"
+              :disabled="isPlayingAudio"
+              type="button"
+              class="px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              :class="
+                currentSpeed === speed
+                  ? 'bg-white text-indigo-700 shadow-xs font-black ring-1 ring-slate-200/80 scale-102'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/60'
+              "
+              :title="`Установить скорость ${speed}× и прослушать`"
+            >
+              {{ speed === 1 ? '1.0×' : speed + '×' }}
+            </button>
+          </div>
         </div>
 
         <!-- Russian Practical Transcription -->
@@ -344,13 +375,14 @@
           <!-- Listen reference audio button -->
           <div class="pt-2 border-t border-slate-200 flex items-center justify-center">
             <button
-              @click="playAudio(0.85)"
+              @click="playAudio()"
               type="button"
               class="w-full sm:w-auto px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
             >
-              <span>🔊 Послушать эталон</span>
+              <span>🔊 Послушать эталон ({{ currentSpeed }}×)</span>
             </button>
           </div>
+
 
           <!-- Pronunciation Real-time Analysis Card -->
           <div
@@ -417,12 +449,13 @@
             <!-- Action Buttons: Compare with Native Audio & Accept -->
             <div class="flex flex-wrap items-center justify-between gap-2 pt-4 border-t border-current/10 mt-3">
               <button
-                @click="playAudio(0.85)"
+                @click="playAudio()"
                 type="button"
                 class="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center gap-1.5 shadow-xs transition"
               >
-                <span>🔊 Послушать эталон</span>
+                <span>🔊 Послушать эталон ({{ currentSpeed }}×)</span>
               </button>
+
 
               <button
                 @click="acceptVerificationAndAdvance"
@@ -549,6 +582,13 @@ const store = useLearningStore();
 
 const phrase = computed(() => store.currentPhrase);
 
+function setGender(gender) {
+  store.setUserGender(gender);
+  try {
+    localStorage.setItem('thai_frazovik_gender_set', 'true');
+  } catch (e) {}
+}
+
 const isPlayingAudio = ref(false);
 const showToneLegend = ref(false);
 const isLearningExpanded = ref(false);
@@ -589,11 +629,26 @@ onUnmounted(() => {
   stopListening();
 });
 
-function playAudio(rate = 0.85) {
+const speedOptions = [0.5, 0.7, 1.0, 1.2];
+const currentSpeed = computed(() => {
+  const s = Number(store.settings?.playbackRate);
+  if (speedOptions.includes(s)) return s;
+  const match = speedOptions.find((opt) => Math.abs(opt - s) < 0.05);
+  return match || 0.7;
+});
+
+function setSpeedAndPlay(speed) {
+  store.setPlaybackRate(speed);
+  playAudio(speed);
+}
+
+function playAudio(rate = null) {
   if (!phrase.value) return;
+  const targetRate = rate !== null ? Number(rate) : currentSpeed.value;
   isPlayingAudio.value = true;
   speechService.speakThai(phrase.value.thai_hidden, {
-    rate,
+    rate: targetRate,
+    gender: store.userGender,
     onStart: () => {
       isPlayingAudio.value = true;
     },
@@ -608,8 +663,9 @@ function playAudio(rate = 0.85) {
 
 function playSingleWord(thaiWord) {
   if (!thaiWord) return;
-  speechService.speakThai(thaiWord, { rate: 0.75 });
+  speechService.speakThai(thaiWord, { rate: Math.max(0.5, currentSpeed.value * 0.9), gender: store.userGender });
 }
+
 
 function handleSkip() {
   stopListening();
@@ -620,10 +676,11 @@ function handleLearn() {
   // Reveal word-by-word breakdown and translations
   isLearningExpanded.value = !isLearningExpanded.value;
   if (isLearningExpanded.value) {
-    // Also play audio to assist learning
-    playAudio(0.8);
+    // Also play audio to assist learning at user speed
+    playAudio();
   }
 }
+
 
 function handleAlreadyKnow() {
   // Open answer verification panel (do NOT trigger mic automatically to avoid unsolicited permission prompts)

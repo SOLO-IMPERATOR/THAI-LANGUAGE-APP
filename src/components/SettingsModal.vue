@@ -22,8 +22,52 @@
       </div>
 
       <div class="py-4 space-y-6">
+        <!-- 0. Gender Selection (Kha / Khap) -->
+        <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200">
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+              Пол ученика (кха / кхап)
+            </label>
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-100">
+              Вежливые частицы
+            </span>
+          </div>
+          <p class="text-[11px] text-slate-500 mb-3 leading-relaxed">
+            В тайском языке для женщин обязательны частицы <strong>ค่ะ / คะ (кха)</strong>, а для мужчин — <strong>ครับ (кхап)</strong>. Все 900 фраз тренажёра адаптируются под ваш пол без изменения общего состава.
+          </p>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              @click="setGender('female')"
+              class="py-2.5 px-3 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2"
+              :class="
+                store.userGender === 'female'
+                  ? 'bg-rose-50 border-rose-300 text-rose-700 ring-2 ring-rose-400/30 font-black shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+              "
+            >
+              <span>👩</span>
+              <span>Женский (кха)</span>
+            </button>
+            <button
+              type="button"
+              @click="setGender('male')"
+              class="py-2.5 px-3 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2"
+              :class="
+                store.userGender === 'male'
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-700 ring-2 ring-indigo-400/30 font-black shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+              "
+            >
+              <span>👨</span>
+              <span>Мужской (кхап)</span>
+            </button>
+          </div>
+        </div>
+
         <!-- 1. Daily Goal Selector -->
         <div>
+
           <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
             Дневная норма фраз
           </label>
@@ -109,7 +153,49 @@
           </div>
         </div>
 
-        <!-- 3. Notifications & Reminders -->
+        <!-- 3. Audio Playback Speed Selector (0.5x, 0.7x, 1.0x, 1.2x) -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+              Скорость озвучки (TTS)
+            </label>
+            <span class="text-[11px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100">
+              {{ formatSpeedLabel(store.settings.playbackRate) }}
+            </span>
+          </div>
+
+          <div class="grid grid-cols-4 gap-2 mb-2">
+            <button
+              v-for="spd in [0.5, 0.7, 1.0, 1.2]"
+              :key="spd"
+              @click="setSpeed(spd)"
+              type="button"
+              class="py-2.5 rounded-2xl text-xs font-bold border transition active:scale-95 cursor-pointer"
+              :class="
+                isCurrentSpeed(spd)
+                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-100 font-black'
+                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+              "
+            >
+              {{ spd === 1 ? '1.0×' : spd + '×' }}
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between mt-1 px-1">
+            <span class="text-[11px] text-slate-500">
+              {{ getSpeedDescription(store.settings.playbackRate) }}
+            </span>
+            <button
+              @click="testSpeedVoice"
+              type="button"
+              class="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer transition"
+            >
+              <span>🔊 Тест звука</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 4. Notifications & Reminders -->
         <div class="p-4 sm:p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3.5">
           <div class="flex items-center justify-between">
             <div>
@@ -198,9 +284,51 @@
 <script setup>
 import { ref } from 'vue';
 import { useLearningStore } from '../useLearningStore.js';
+import { useAuthStore } from '../authStore.js';
+import { speechService } from '../speechService.js';
 
 const emit = defineEmits(['close']);
 const store = useLearningStore();
+const authStore = useAuthStore();
+
+function setGender(gender) {
+  store.setUserGender(gender);
+  if (authStore.currentUser) {
+    authStore.updateProfile({ gender }).catch(() => {});
+  }
+}
+
+function isCurrentSpeed(speed) {
+  const current = Number(store.settings?.playbackRate) || 0.7;
+  return Math.abs(current - speed) < 0.05;
+}
+
+function setSpeed(spd) {
+  store.setPlaybackRate(spd);
+}
+
+function formatSpeedLabel(speed) {
+  const s = Number(speed) || 0.7;
+  return s === 1 ? '1.0×' : `${s}×`;
+}
+
+function getSpeedDescription(speed) {
+  const s = Number(speed) || 0.7;
+  if (Math.abs(s - 0.5) < 0.05) return 'Очень медленно для детального разбора тонов';
+  if (Math.abs(s - 0.7) < 0.05) return 'Замедленно (рекомендуется для учебы)';
+  if (Math.abs(s - 1.0) < 0.05) return 'Обычный темп естественной тайской речи';
+  if (Math.abs(s - 1.2) < 0.05) return 'Быстрый темп для тренировки беглого слуха';
+  return `${s}× скорость`;
+}
+
+function testSpeedVoice() {
+  const sample = store.userGender === 'female' ? 'สวัสดีค่ะ' : 'สวัสดีครับ';
+  speechService.speakThai(sample, {
+    rate: Number(store.settings?.playbackRate) || 0.7,
+    gender: store.userGender
+  });
+}
+
 
 const isCustomGoal = ref(![3, 5, 10].includes(store.settings.dailyGoal));
 const customGoalValue = ref(store.settings.dailyGoal);

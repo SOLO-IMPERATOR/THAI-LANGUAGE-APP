@@ -196,8 +196,73 @@ export const useCommunityStore = defineStore('community', {
   },
 
   actions: {
+    async fetchUsersFromServer() {
+      try {
+        const res = await fetch('/api/users');
+        if (res.ok) {
+          const serverUsers = await res.json();
+          if (Array.isArray(serverUsers) && serverUsers.length > 0) {
+            for (const su of serverUsers) {
+              const existingIdx = this.communityUsers.findIndex(
+                (u) => u.id === su.id || (su.email && u.email?.toLowerCase() === su.email?.toLowerCase())
+              );
+              const mapped = {
+                id: su.id,
+                email: su.email,
+                firstName: su.firstName || su.username?.split(' ')[0] || 'Пользователь',
+                lastName: su.lastName || su.username?.split(' ').slice(1).join(' ') || '',
+                gender: su.gender || 'male',
+                cityInThailand: su.cityInThailand || 'Таиланд',
+                stayDuration: su.stayDuration || '',
+                weeklyScore: su.weeklyScore || su.xp || 50,
+                isPrivate: su.isPrivate === true,
+                avatarUrl: su.avatar || su.avatarUrl || ''
+              };
+              if (existingIdx !== -1) {
+                this.communityUsers[existingIdx] = {
+                  ...this.communityUsers[existingIdx],
+                  ...mapped
+                };
+              } else {
+                this.communityUsers.push(mapped);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Could not fetch server community users:', err);
+      }
+    },
+
+    addUserLocally(user) {
+      if (!user) return;
+      const idx = this.communityUsers.findIndex(
+        (u) => u.id === user.id || (user.email && u.email?.toLowerCase() === user.email?.toLowerCase())
+      );
+      const mapped = {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName || 'Пользователь',
+        lastName: user.lastName || '',
+        gender: user.gender || 'female',
+        cityInThailand: user.cityInThailand || user.city || 'Таиланд',
+        stayDuration: user.stayDuration || '',
+        weeklyScore: user.weeklyScore || user.xp || 60,
+        isPrivate: user.isPrivate === true,
+        avatarUrl: user.avatarUrl || user.avatar || ''
+      };
+      if (idx !== -1) {
+        this.communityUsers[idx] = { ...this.communityUsers[idx], ...mapped };
+      } else {
+        this.communityUsers.unshift(mapped);
+      }
+    },
+
     async initCommunity(currentUser) {
-      if (this.isInitialized) return;
+      if (this.isInitialized) {
+        await this.fetchUsersFromServer();
+        return;
+      }
 
       try {
         // Load friend requests from Dexie or localStorage
@@ -214,7 +279,6 @@ export const useCommunityStore = defineStore('community', {
         const storedRooms = localStorage.getItem('thai_frazovik_rooms');
         if (storedRooms) {
           const parsed = JSON.parse(storedRooms);
-          // Purge test rooms 1, 2, 3
           this.rooms = Array.isArray(parsed) ? parsed.filter((r) => r.id !== 1 && r.id !== 2 && r.id !== 3) : [];
           this.saveRooms();
         } else {
@@ -230,9 +294,29 @@ export const useCommunityStore = defineStore('community', {
           this.roomMessages = [];
         }
 
+        // Fetch registered users from server and Dexie
+        await this.fetchUsersFromServer();
+
+        // Also fetch from Dexie users table if available
+        if (db.users) {
+          try {
+            const dexieUsers = await db.users.toArray();
+            for (const du of dexieUsers) {
+              this.addUserLocally(du);
+            }
+          } catch (dexErr) {}
+        }
+
         // Add current user to community if authenticated
         if (currentUser) {
           this.syncCurrentUser(currentUser);
+        }
+
+        // Setup background polling so when another user registers on another device, they appear
+        if (typeof window !== 'undefined') {
+          setInterval(() => {
+            this.fetchUsersFromServer();
+          }, 15000);
         }
       } catch (err) {
         console.warn('Community init warning:', err);
@@ -243,12 +327,15 @@ export const useCommunityStore = defineStore('community', {
 
     syncCurrentUser(user) {
       if (!user) return;
-      const idx = this.communityUsers.findIndex((u) => u.id === user.id);
+      const idx = this.communityUsers.findIndex(
+        (u) => u.id === user.id || (user.email && u.email?.toLowerCase() === user.email?.toLowerCase())
+      );
       const userItem = {
         id: user.id,
         email: user.email,
         firstName: user.firstName || 'Пользователь',
         lastName: user.lastName || '',
+        gender: user.gender || 'male',
         cityInThailand: user.cityInThailand || 'Таиланд',
         stayDuration: user.stayDuration || '',
         weeklyScore: user.weeklyScore || 50,
@@ -257,9 +344,9 @@ export const useCommunityStore = defineStore('community', {
       };
 
       if (idx !== -1) {
-        this.communityUsers[idx] = userItem;
+        this.communityUsers[idx] = { ...this.communityUsers[idx], ...userItem };
       } else {
-        this.communityUsers.push(userItem);
+        this.communityUsers.unshift(userItem);
       }
     },
 

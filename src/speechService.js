@@ -44,7 +44,7 @@ class SpeechService {
   /**
    * Speak Thai text using window.speechSynthesis (th-TH)
    */
-  speakThai(thaiText, { onStart, onEnd, onError, rate = 0.82 } = {}) {
+  speakThai(thaiText, { onStart, onEnd, onError, rate = 0.82, gender = 'female' } = {}) {
     if (!this.synth) {
       if (onError) onError(new Error('Синтез речи (TTS) не поддерживается в вашем браузере.'));
       return;
@@ -57,9 +57,19 @@ class SpeechService {
     const utterance = new SpeechSynthesisUtterance(thaiText);
     utterance.lang = 'th-TH';
     utterance.rate = rate; // Learners benefit from slightly slower pace
-    utterance.pitch = 1.0;
+    utterance.pitch = gender === 'female' ? 1.12 : 0.94;
 
-    if (this.thaiVoice) {
+    const voices = this.synth.getVoices ? this.synth.getVoices() : [];
+    const thaiVoices = voices.filter((v) => v.lang === 'th-TH' || v.lang.toLowerCase().startsWith('th'));
+    if (thaiVoices.length > 1) {
+      if (gender === 'female') {
+        const femaleVoice = thaiVoices.find((v) => /female|woman|kanya|premwadee|narisa/i.test(v.name));
+        utterance.voice = femaleVoice || this.thaiVoice || thaiVoices[0];
+      } else {
+        const maleVoice = thaiVoices.find((v) => /male|man|niwat/i.test(v.name));
+        utterance.voice = maleVoice || this.thaiVoice || thaiVoices[0];
+      }
+    } else if (this.thaiVoice) {
       utterance.voice = this.thaiVoice;
     } else {
       this.initVoices();
@@ -67,6 +77,7 @@ class SpeechService {
         utterance.voice = this.thaiVoice;
       }
     }
+
 
     utterance.onstart = () => {
       if (onStart) onStart();

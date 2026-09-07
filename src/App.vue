@@ -39,8 +39,32 @@
           </button>
         </div>
 
-        <!-- Header Actions: Leaderboard, User Profile (ЛК) & Settings -->
+        <!-- Header Actions: Gender Switcher, Leaderboard, User Profile (ЛК) & Settings -->
         <div class="flex items-center gap-2 sm:gap-2.5">
+          <!-- Gender Switcher (Kha / Khap) -->
+          <div class="inline-flex items-center p-0.5 sm:p-1 bg-slate-100 rounded-2xl border border-slate-200 shadow-2xs">
+            <button
+              @click="setGlobalGender('female', true)"
+              type="button"
+              class="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer"
+              :class="store.userGender === 'female' ? 'bg-white text-rose-700 shadow-xs font-black' : 'text-slate-500 hover:text-slate-800'"
+              title="Женский вариант: вежливые частицы ค่ะ / คะ (савади кха)"
+            >
+              <span>👩</span>
+              <span class="hidden xs:inline">кха</span>
+            </button>
+            <button
+              @click="setGlobalGender('male', true)"
+              type="button"
+              class="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer"
+              :class="store.userGender === 'male' ? 'bg-white text-indigo-700 shadow-xs font-black' : 'text-slate-500 hover:text-slate-800'"
+              title="Мужской вариант: вежливая частица ครับ (савади кхрап)"
+            >
+              <span>👨</span>
+              <span class="hidden xs:inline">кхап</span>
+            </button>
+          </div>
+
           <!-- Weekly Leaderboard Button (Requirement 6) -->
           <button
             @click="communityStore.openCommunity('leaderboard')"
@@ -140,6 +164,38 @@
       </div>
 
       <div v-else>
+        <!-- Gentle First-Time Gender Selector Banner -->
+        <div
+          v-if="!hasExplicitlyChosenGender"
+          class="mb-6 p-4 rounded-3xl bg-gradient-to-r from-rose-50 via-indigo-50 to-amber-50 border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3"
+        >
+          <div class="flex items-center gap-3 text-left">
+            <span class="text-2xl flex-shrink-0">🇹🇭</span>
+            <div>
+              <div class="text-xs font-extrabold text-slate-900">
+                Выберите ваш пол: «савади кха» или «савади кхрап»
+              </div>
+              <div class="text-[11px] text-slate-600">
+                В тайском языке окончания зависят от пола. Всего в базе 900 фраз без повторов, адаптированных под вас.
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button
+              @click="setGlobalGender('female', true)"
+              class="px-3.5 py-2 rounded-xl bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 text-xs font-black shadow-2xs transition active:scale-95 cursor-pointer"
+            >
+              👩 Говорю «кха»
+            </button>
+            <button
+              @click="setGlobalGender('male', true)"
+              class="px-3.5 py-2 rounded-xl bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 text-xs font-black shadow-2xs transition active:scale-95 cursor-pointer"
+            >
+              👨 Говорю «кхап»
+            </button>
+          </div>
+        </div>
+
         <!-- Trainer View: Bento Grid -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
@@ -199,6 +255,40 @@
                   <div class="text-lg font-black text-emerald-700">{{ store.masteredCount }}</div>
                   <div class="text-[10px] text-emerald-600 font-semibold">Выучено</div>
                 </div>
+              </div>
+            </div>
+
+            <!-- Gender Adaptation Card -->
+            <div
+              class="p-3.5 rounded-2xl border transition-all"
+              :class="store.userGender === 'female' ? 'bg-rose-50/70 border-rose-200/80' : 'bg-indigo-50/70 border-indigo-200/80'"
+            >
+              <div class="flex items-center justify-between mb-1">
+                <span
+                  class="text-[10px] font-bold uppercase tracking-widest"
+                  :class="store.userGender === 'female' ? 'text-rose-700' : 'text-indigo-700'"
+                >
+                  Адаптация фраз под пол
+                </span>
+                <span
+                  class="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-white shadow-2xs"
+                  :class="store.userGender === 'female' ? 'text-rose-600' : 'text-indigo-600'"
+                >
+                  {{ store.userGender === 'female' ? 'Частицы ค่ะ / คะ' : 'Частица ครับ' }}
+                </span>
+              </div>
+              <div class="flex items-center justify-between">
+                <div class="text-xs font-bold text-slate-800">
+                  {{ store.userGender === 'female' ? '👩 Вы говорите «савади кха»' : '👨 Вы говорите «савади кхрап»' }}
+                </div>
+                <button
+                  type="button"
+                  @click="setGlobalGender(store.userGender === 'female' ? 'male' : 'female', true)"
+                  class="text-[11px] font-black underline underline-offset-2 hover:opacity-80 transition cursor-pointer"
+                  :class="store.userGender === 'female' ? 'text-rose-700' : 'text-indigo-700'"
+                >
+                  Сменить
+                </button>
               </div>
             </div>
 
@@ -318,6 +408,23 @@ const pwaStore = usePwaStore();
 
 const showSettings = ref(false);
 const initError = ref(null);
+const hasExplicitlyChosenGender = ref(
+  typeof localStorage !== 'undefined' && localStorage.getItem('thai_frazovik_gender_set') === 'true'
+);
+
+function setGlobalGender(gender, markExplicit = true) {
+  store.setUserGender(gender);
+  if (markExplicit) {
+    try {
+      localStorage.setItem('thai_frazovik_gender_set', 'true');
+      hasExplicitlyChosenGender.value = true;
+    } catch (e) {}
+  }
+  if (authStore.currentUser) {
+    authStore.updateProfile({ gender }).catch(() => {});
+  }
+}
+
 
 async function startApp() {
   initError.value = null;

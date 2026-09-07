@@ -3,12 +3,37 @@ import vue from '@vitejs/plugin-vue';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function silenceViteHmrPlugin() {
+  return {
+    name: 'silence-vite-hmr-plugin',
+    transform(code, id) {
+      if (id.includes('@vite/client') || id.includes('vite/dist/client/client.mjs')) {
+        return code
+          .replace(
+            /console\.error\(`\[vite\] failed to connect to websocket[^\`]*`\);?\s*throw e;?/g,
+            'console.debug("[vite] HMR websocket disconnected (benign)");'
+          )
+          .replace(
+            /console\.error\(`\[vite\] failed to connect to websocket[\s\S]*?`\);?/g,
+            'console.debug("[vite] HMR fallback (benign)");'
+          );
+      }
+      return null;
+    }
+  };
+}
 
 export default defineConfig(() => {
   return {
     plugins: [
       vue(),
       tailwindcss(),
+      silenceViteHmrPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],

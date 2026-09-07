@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia';
 import { db } from './db.js';
-import { usePwaStore } from './pwaStore.js';
+import { usePwaStore } from './pwaStore.ts';
+import { useCommunityStore } from './communityStore.js';
+import { useLearningStore } from './useLearningStore.js';
 
 const STORAGE_KEY = 'thai_frazovik_current_user';
 
@@ -28,6 +30,9 @@ export const useAuthStore = defineStore('auth', {
     },
     userAvatar: (state) => {
       return state.currentUser?.avatarUrl || null;
+    },
+    userGender: (state) => {
+      return state.currentUser?.gender || 'male';
     }
   },
 
@@ -45,6 +50,13 @@ export const useAuthStore = defineStore('auth', {
             this.currentUser = null;
           } else if (parsed && parsed.email) {
             this.currentUser = parsed;
+            // Sync user gender into learning store
+            try {
+              const learning = useLearningStore();
+              if (parsed.gender) {
+                learning.setUserGender(parsed.gender);
+              }
+            } catch (err) {}
           }
         }
 
@@ -57,13 +69,14 @@ export const useAuthStore = defineStore('auth', {
     },
 
     /**
-     * Register via Email & Password with customizable Phrase Count, Privacy Mode, and Personal Data Consent
+     * Register via Email & Password with Gender, Phrase Count, Privacy Mode, and Personal Data Consent
      */
     async registerWithEmail({
       firstName,
       lastName,
       email,
       password,
+      gender = 'female', // 'male' | 'female'
       dailyGoal = 10,
       cityInThailand = '',
       stayDuration = '',
@@ -79,47 +92,121 @@ export const useAuthStore = defineStore('auth', {
         throw new Error('Пожалуйста, заполните обязательные поля: Имя, Фамилия, Email и Пароль.');
       }
 
+      if (!gender || (gender !== 'male' && gender !== 'female')) {
+        throw new Error('Пожалуйста, выберите пол (Мужской или Женский) для правильного подбора вежливых частиц кха/кхрап.');
+      }
+
       if (password.length < 6) {
         throw new Error('Пароль должен содержать не менее 6 символов.');
       }
 
       const cleanEmail = email.trim().toLowerCase();
-      // Check if user already exists
+      
+      // Check local dexie
       const existing = await db.users.where('email').equals(cleanEmail).first();
       if (existing) {
         throw new Error('Пользователь с таким Email уже существует. Пожалуйста, войдите в систему.');
       }
 
       const parsedGoal = Number(dailyGoal) > 0 ? Number(dailyGoal) : 10;
+      const defaultAvatar = gender === 'female' ? '👩' : '👨';
 
       const newUser = {
+        id: `user-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         email: cleanEmail,
         password: password,
+        gender: gender,
         dailyGoal: parsedGoal,
         authProvider: 'email',
-        cityInThailand: (cityInThailand || '').trim(),
-        stayDuration: (stayDuration || '').trim(),
-        avatarUrl: avatarUrl || '',
+        cityInThailand: (cityInThailand || '').trim() || 'Бангкок',
+        stayDuration: (stayDuration || '').trim() || 'Турист / Отпуск',
+        avatarUrl: avatarUrl || defaultAvatar,
         isPrivate: !!isPrivate,
         weeklyScore: 0,
+        xp: 10,
+        level: 1,
+        streak: 1,
         createdAt: Date.now()
       };
 
-      const id = await db.users.add(newUser);
-      newUser.id = id;
+      // 1. Save to local Dexie
+      try {
+        const id = await db.users.add(newUser);
+        newUser.localId = id;
+      } catch (dbErr) {
+        console.warn('Dexie save error:', dbErr);
+      }
 
+      // 2. Sync to Server so other devices & leaderboard immediately see the user!
+      try {
+        const res = await fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: newUser.id,
+            email: newUser.email,
+            username: `${newUser.firstName} ${newUser.lastName}`.trim(),
+            firstName: newUser.firstName,
+            lastName: newUser.lastName,
+            gender: newUser.gender,
+            avatar: newUser.avatarUrl,
+            cityInThailand: newUser.cityInThailand,
+            stayDuration: newUser.stayDuration,
+            dailyGoal: newUser.dailyGoal,
+            xp: newUser.xp,
+            level: newUser.level,
+            streak: newUser.streak,
+            isPrivate: newUser.isPrivate,
+            registeredAt: new Date().toISOString()
+          })
+        });
+        if (!res.ok) {
+          console.warn('Server registration returned status:', res.status);
+        }
+      } catch (netErr) {
+        console.warn('Network registration sync error:', netErr);
+      }
+
+      // 3. Update active session and learning gender
       this.setCurrentUser(newUser);
 
-      // Offer PWA installation immediately after registration as requested in Requirement 8
+      try {
+        const learningStore = useLearningStore();
+        learningStore.setUserGender(gender);
+      } catch (e) {}
+
+      // 4. Update communityStore immediately
+      try {
+        const communityStore = useCommunityStore();
+        communityStore.addUserLocally({
+          id: newUser.id,
+          username: `${newUser.firstName} ${newUser.lastName}`.trim(),
+          firstName: newUser.firstName,
+          lastName: newUser.lastName,
+          email: newUser.email,
+          gender: newUser.gender,
+          avatar: newUser.avatarUrl,
+          city: newUser.cityInThailand,
+          stayDuration: newUser.stayDuration,
+          level: newUser.level,
+          xp: newUser.xp,
+          streak: newUser.streak,
+          registeredAt: new Date().toISOString(),
+          isCurrentUser: true,
+          isFriend: false
+        });
+      } catch (commErr) {
+        console.warn('Community store sync error:', commErr);
+      }
+
+      // 5. Trigger native browser PWA install prompt automatically!
       try {
         const pwaStore = usePwaStore();
-        setTimeout(() => {
-          pwaStore.openInstallModal('registration');
-        }, 500);
+        pwaStore.triggerNativePromptImmediately('registration');
       } catch (pwaErr) {
-        console.warn('PWA trigger after registration warning:', pwaErr);
+        console.warn('PWA native trigger warning:', pwaErr);
       }
 
       return newUser;
@@ -134,7 +221,22 @@ export const useAuthStore = defineStore('auth', {
       }
 
       const cleanEmail = email.trim().toLowerCase();
-      const user = await db.users.where('email').equals(cleanEmail).first();
+      let user = await db.users.where('email').equals(cleanEmail).first();
+
+      // If not in local Dexie, try server /api/users
+      if (!user) {
+        try {
+          const res = await fetch('/api/users');
+          if (res.ok) {
+            const serverUsers = await res.json();
+            const found = serverUsers.find((u) => u.email?.toLowerCase() === cleanEmail);
+            if (found) {
+              user = found;
+              await db.users.add(user).catch(() => {});
+            }
+          }
+        } catch (e) {}
+      }
 
       if (!user) {
         throw new Error('Пользователь с таким Email не найден. Проверьте правильность ввода или зарегистрируйтесь.');
@@ -145,11 +247,19 @@ export const useAuthStore = defineStore('auth', {
       }
 
       this.setCurrentUser(user);
+
+      if (user.gender) {
+        try {
+          const learningStore = useLearningStore();
+          learningStore.setUserGender(user.gender);
+        } catch (e) {}
+      }
+
       return user;
     },
 
     /**
-     * Update user profile fields (personal data, privacy, city, stay, dailyGoal, etc.)
+     * Update user profile fields (personal data, privacy, city, stay, dailyGoal, gender, etc.)
      */
     async updateProfile(updates) {
       if (!this.currentUser) return;
@@ -167,6 +277,30 @@ export const useAuthStore = defineStore('auth', {
         }
       }
 
+      // Sync to server
+      try {
+        fetch('/api/users/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: updatedUser.id,
+            email: updatedUser.email,
+            gender: updatedUser.gender,
+            avatar: updatedUser.avatarUrl,
+            username: `${updatedUser.firstName || ''} ${updatedUser.lastName || ''}`.trim(),
+            cityInThailand: updatedUser.cityInThailand,
+            dailyGoal: updatedUser.dailyGoal
+          })
+        }).catch(() => {});
+      } catch (e) {}
+
+      if (updates.gender) {
+        try {
+          const learningStore = useLearningStore();
+          learningStore.setUserGender(updates.gender);
+        } catch (e) {}
+      }
+
       this.setCurrentUser(updatedUser);
       return updatedUser;
     },
@@ -182,7 +316,8 @@ export const useAuthStore = defineStore('auth', {
      * Remove custom profile photo
      */
     async removeProfilePhoto() {
-      return await this.updateProfile({ avatarUrl: '' });
+      const defaultAvatar = this.currentUser?.gender === 'female' ? '👩' : '👨';
+      return await this.updateProfile({ avatarUrl: defaultAvatar });
     },
 
     setCurrentUser(user) {
@@ -227,4 +362,3 @@ export const useAuthStore = defineStore('auth', {
     }
   }
 });
-

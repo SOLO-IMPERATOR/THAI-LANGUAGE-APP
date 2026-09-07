@@ -171,6 +171,58 @@
           />
         </div>
 
+        <!-- Gender Selection (Kha / Khap) -->
+        <div class="p-4 sm:p-5 rounded-3xl bg-slate-50 border border-slate-200/90 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <label class="block text-xs font-bold text-slate-800 uppercase tracking-wider">
+              Пол ученика (Вежливые частицы кха / кхап)
+            </label>
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-100">
+              Важно для тайского
+            </span>
+          </div>
+          <p class="text-[11px] text-slate-500 leading-relaxed">
+            В тайском языке женщины используют частицы <strong>ค่ะ / คะ (кха)</strong>, а мужчины — <strong>ครับ (кхрап)</strong>. Это одна фраза, но тренажёр отображает и озвучивает форму строго для вашего пола.
+          </p>
+
+          <div class="grid grid-cols-2 gap-2.5 pt-1">
+            <button
+              type="button"
+              @click="formData.gender = 'female'"
+              class="p-3 rounded-2xl border text-left transition cursor-pointer flex flex-col justify-between"
+              :class="
+                formData.gender === 'female'
+                  ? 'bg-rose-50 border-rose-300 text-rose-950 ring-2 ring-rose-400/40 shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100/80'
+              "
+            >
+              <div class="flex items-center gap-2 font-bold text-xs">
+                <span class="text-base">👩</span>
+                <span>Женский (кха)</span>
+              </div>
+              <span class="text-[10px] text-slate-500 mt-1">Окончания ค่ะ / คะ</span>
+            </button>
+
+            <button
+              type="button"
+              @click="formData.gender = 'male'"
+              class="p-3 rounded-2xl border text-left transition cursor-pointer flex flex-col justify-between"
+              :class="
+                formData.gender === 'male'
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-950 ring-2 ring-indigo-400/40 shadow-xs'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100/80'
+              "
+            >
+              <div class="flex items-center gap-2 font-bold text-xs">
+                <span class="text-base">👨</span>
+                <span>Мужской (кхап)</span>
+              </div>
+              <span class="text-[10px] text-slate-500 mt-1">Окончание ครับ</span>
+            </button>
+          </div>
+        </div>
+
+
         <!-- 3. Профиль в Таиланде (Вынесен в ЛК) -->
         <div class="p-5 rounded-3xl bg-indigo-50/50 border border-indigo-100 space-y-4">
           <div class="flex items-center gap-2 text-indigo-900">
@@ -371,6 +423,7 @@ const formData = reactive({
   firstName: '',
   lastName: '',
   email: '',
+  gender: 'female',
   cityInThailand: '',
   stayDuration: '',
   dailyGoal: 10,
@@ -386,12 +439,14 @@ watch(isOpen, (opened) => {
     formData.firstName = authStore.currentUser.firstName || '';
     formData.lastName = authStore.currentUser.lastName || '';
     formData.email = authStore.currentUser.email || '';
+    formData.gender = authStore.currentUser.gender || learningStore.userGender || 'female';
     formData.cityInThailand = authStore.currentUser.cityInThailand || '';
     formData.stayDuration = authStore.currentUser.stayDuration || '';
     formData.dailyGoal = authStore.currentUser.dailyGoal || learningStore.settings.dailyGoal || 10;
     formData.isPrivate = !!authStore.currentUser.isPrivate;
   }
 });
+
 
 // Process file upload and compress to Base64 data URL
 function processImageFile(file) {
@@ -475,6 +530,7 @@ async function saveChanges() {
       firstName: formData.firstName.trim(),
       lastName: formData.lastName.trim(),
       email: formData.email.trim().toLowerCase(),
+      gender: formData.gender,
       cityInThailand: formData.cityInThailand.trim(),
       stayDuration: formData.stayDuration.trim(),
       dailyGoal: Number(formData.dailyGoal) || 10,

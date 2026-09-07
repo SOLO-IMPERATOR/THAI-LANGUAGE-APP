@@ -1,6 +1,30 @@
 <!doctype html>
 <html lang="ru">
   <head>
+    <script>
+      (function () {
+        if (typeof window === 'undefined') return;
+        // Suppress unhandled promise rejections from benign Vite client websocket attempts
+        window.addEventListener('unhandledrejection', function (event) {
+          const reason = String(event.reason || '');
+          if (reason.includes('websocket') || reason.includes('WebSocket') || reason.includes('[vite]')) {
+            event.preventDefault();
+          }
+        });
+        // Filter out benign [vite] websocket connection failure logs
+        const origConsoleError = console.error;
+        console.error = function (...args) {
+          const firstArg = args[0] != null ? String(args[0]) : '';
+          if (
+            firstArg.includes('[vite] failed to connect to websocket') ||
+            (firstArg.includes('[vite]') && (firstArg.includes('websocket') || firstArg.includes('WebSocket')))
+          ) {
+            return;
+          }
+          origConsoleError.apply(console, args);
+        };
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Тайский фразовик</title>
