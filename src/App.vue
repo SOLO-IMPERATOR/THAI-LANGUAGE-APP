@@ -23,7 +23,7 @@
           <!-- Quick Add to Home Screen Button right next to the logo / title -->
           <button
             v-if="!pwaStore.isInstalled"
-            @click="pwaStore.openInstallModal('header')"
+            @click="quickInstall"
             type="button"
             id="quick-add-to-homescreen-btn"
             class="flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-2 bg-gradient-to-r from-emerald-50 to-teal-50 hover:from-emerald-100 hover:to-teal-100 text-emerald-800 border border-emerald-300/80 rounded-2xl text-xs font-black transition-all shadow-xs hover:shadow-md cursor-pointer active:scale-95 group flex-shrink-0 ml-1 sm:ml-2"
@@ -90,18 +90,16 @@
             class="flex items-center gap-2.5 bg-white hover:bg-slate-50 px-3 py-1.5 rounded-2xl border border-slate-200 shadow-xs transition cursor-pointer group active:scale-95"
             title="Открыть Личный кабинет"
           >
-            <!-- User photo avatar or initials -->
-            <div class="w-8 h-8 rounded-xl overflow-hidden bg-indigo-100 flex items-center justify-center flex-shrink-0 border border-slate-200">
-              <img
-                v-if="authStore.userAvatar"
-                :src="authStore.userAvatar"
-                alt="Аватар"
-                class="w-full h-full object-cover"
-              />
-              <span v-else class="text-indigo-700 font-black text-xs">
-                {{ authStore.userInitials }}
-              </span>
-            </div>
+            <!-- User photo avatar or gradient initials -->
+            <UserAvatar
+              :name="authStore.userFullName"
+              :email="authStore.currentUser.email"
+              :photo-url="authStore.userAvatar"
+              :seed="authStore.currentUser.id || authStore.currentUser.email"
+              size-class="w-8 h-8"
+              text-class="text-xs"
+              rounded-class="rounded-xl border border-white/40 shadow-xs"
+            />
 
             <div class="text-left hidden md:block pr-1">
               <div class="text-xs font-bold text-slate-900 group-hover:text-indigo-600 transition leading-none">
@@ -176,7 +174,7 @@
                 Выберите ваш пол: «савади кха» или «савади кхрап»
               </div>
               <div class="text-[11px] text-slate-600">
-                В тайском языке окончания зависят от пола. Всего в базе 900 фраз без повторов, адаптированных под вас.
+                Всего в базе 1500 разговорных фраз без повторов, адаптированных под вас.
               </div>
             </div>
           </div>
@@ -400,6 +398,7 @@ import UserProfileModal from './components/UserProfileModal.vue';
 import CommunityModal from './components/CommunityModal.vue';
 import PwaInstallModal from './components/PwaInstallModal.vue';
 import ElephantLogo from './components/ElephantLogo.vue';
+import UserAvatar from './components/UserAvatar.vue';
 
 const store = useLearningStore();
 const authStore = useAuthStore();
@@ -411,6 +410,14 @@ const initError = ref(null);
 const hasExplicitlyChosenGender = ref(
   typeof localStorage !== 'undefined' && localStorage.getItem('thai_frazovik_gender_set') === 'true'
 );
+
+async function quickInstall() {
+  if (pwaStore.deferredPrompt) {
+    await pwaStore.triggerInstallPrompt();
+    return;
+  }
+  await pwaStore.triggerNativePromptImmediately('header');
+}
 
 function setGlobalGender(gender, markExplicit = true) {
   store.setUserGender(gender);

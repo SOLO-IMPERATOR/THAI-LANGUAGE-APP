@@ -16,7 +16,7 @@ export const useLearningStore = defineStore('learning', {
   state: () => ({
     phrases: [],
     dictionaryWords: [],
-    userGender: typeof localStorage !== 'undefined' ? (localStorage.getItem('thai_frazovik_gender') || 'male') : 'male',
+    userGender: typeof localStorage !== 'undefined' ? (localStorage.getItem('thai_frazovik_gender') || 'female') : 'female',
     settings: {
       dailyGoal: 5,
       trainingMode: 'mix', // 'new' | 'review' | 'mix'
@@ -150,6 +150,15 @@ export const useLearningStore = defineStore('learning', {
         console.warn('startNewSession error:', err);
       }
 
+      try {
+        const userId = this.getActiveUserId();
+        if (userId) {
+          await this.applyServerSrsProgress(userId);
+        }
+      } catch (err) {
+        console.warn('applyServerSrsProgress error:', err);
+      }
+
       this.isInitialized = true;
       this.isLoading = false;
     },
@@ -171,6 +180,113 @@ export const useLearningStore = defineStore('learning', {
         id: idx + 1,
         review_count: p.review_count || 0
       }));
+    },
+
+    getActiveUserId() {
+      try {
+        const raw = localStorage.getItem('thai_frazovik_current_user');
+        if (!raw) return null;
+        const user = JSON.parse(raw);
+        if (!user?.id || user.isGuest) return null;
+        return user.id;
+      } catch {
+        return null;
+      }
+    },
+
+    async syncPhraseSrsToServer(phraseId, updatedData, event) {
+      const userId = this.getActiveUserId();
+      if (!userId) return;
+
+      try {
+        await fetch(`/api/users/${encodeURIComponent(userId)}/srs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phraseId,
+            stage_srs: updatedData.stage_srs,
+            review_count: updatedData.review_count,
+            next_review: updatedData.next_review,
+            is_deconstructed: updatedData.is_deconstructed,
+            tags: updatedData.tags,
+            event
+          })
+        });
+      } catch (err) {
+        console.warn('SRS server sync failed:', err);
+      }
+    },
+
+    async applyServerSrsProgress(userId) {
+      if (!userId) return;
+
+      try {
+        const res = await fetch(`/api/users/${encodeURIComponent(userId)}/srs`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const serverProgress = Array.isArray(data.progress) ? data.progress : [];
+
+        // If server empty but local has SRS data — upload local once
+        if (serverProgress.length === 0) {
+          const localStudied = this.phrases.filter(
+            (p) => (p.stage_srs || 0) > 0 || (p.review_count || 0) > 0 || p.is_deconstructed
+          );
+          if (localStudied.length > 0) {
+            await fetch(`/api/users/${encodeURIComponent(userId)}/srs/bulk`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                progress: localStudied.map((p) => ({
+                  phraseId: p.id,
+                  stage_srs: p.stage_srs || 0,
+                  review_count: p.review_count || 0,
+                  next_review: p.next_review || 0,
+                  is_deconstructed: p.is_deconstructed || 0,
+                  tags: p.tags || []
+                }))
+              })
+            });
+          }
+          return;
+        }
+
+        const byId = new Map(serverProgress.map((p) => [p.phraseId, p]));
+        for (const phrase of this.phrases) {
+          const remote = byId.get(phrase.id);
+          if (!remote) continue;
+          const patch = {
+            stage_srs: remote.stage_srs || 0,
+            review_count: remote.review_count || 0,
+            next_review: remote.next_review || 0,
+            is_deconstructed: remote.is_deconstructed || 0
+          };
+          if (Array.isArray(remote.tags) && remote.tags.length > 0) {
+            patch.tags = remote.tags;
+          }
+          Object.assign(phrase, patch);
+          await db.phrases.update(phrase.id, patch);
+        }
+
+        this.startNewSession();
+      } catch (err) {
+        console.warn('Failed to apply server SRS progress:', err);
+      }
+    },
+
+    async resetLocalSrsToCanonical() {
+      for (const phrase of this.phrases) {
+        const patch = {
+          stage_srs: 0,
+          review_count: 0,
+          next_review: 0,
+          is_deconstructed: 0
+        };
+        Object.assign(phrase, patch);
+        try {
+          await db.phrases.update(phrase.id, patch);
+        } catch (_) {}
+      }
+      this.startNewSession();
     },
 
     async loadDictionary() {
@@ -381,6 +497,13 @@ export const useLearningStore = defineStore('learning', {
         currentTags.push(cleanTag);
         phrase.tags = currentTags;
         await db.phrases.update(phraseId, { tags: currentTags });
+        await this.syncPhraseSrsToServer(phraseId, {
+          stage_srs: phrase.stage_srs,
+          review_count: phrase.review_count,
+          next_review: phrase.next_review,
+          is_deconstructed: phrase.is_deconstructed,
+          tags: currentTags
+        });
 
         // Update in session queue
         const qItem = this.sessionQueue.find((p) => p.id === phraseId);
@@ -398,6 +521,13 @@ export const useLearningStore = defineStore('learning', {
       const updatedTags = phrase.tags.filter((t) => t !== tagToRemove);
       phrase.tags = updatedTags;
       await db.phrases.update(phraseId, { tags: updatedTags });
+      await this.syncPhraseSrsToServer(phraseId, {
+        stage_srs: phrase.stage_srs,
+        review_count: phrase.review_count,
+        next_review: phrase.next_review,
+        is_deconstructed: phrase.is_deconstructed,
+        tags: updatedTags
+      });
 
       const qItem = this.sessionQueue.find((p) => p.id === phraseId);
       if (qItem) qItem.tags = updatedTags;
@@ -413,6 +543,13 @@ export const useLearningStore = defineStore('learning', {
       const cleanTags = Array.from(new Set(newTags.map((t) => t.trim().replace(/^#/, '').toLowerCase()).filter(Boolean)));
       phrase.tags = cleanTags;
       await db.phrases.update(phraseId, { tags: cleanTags });
+      await this.syncPhraseSrsToServer(phraseId, {
+        stage_srs: phrase.stage_srs,
+        review_count: phrase.review_count,
+        next_review: phrase.next_review,
+        is_deconstructed: phrase.is_deconstructed,
+        tags: cleanTags
+      });
 
       const qItem = this.sessionQueue.find((p) => p.id === phraseId);
       if (qItem) qItem.tags = cleanTags;
@@ -475,6 +612,17 @@ export const useLearningStore = defineStore('learning', {
       if (localPhrase) {
         Object.assign(localPhrase, updatedData);
       }
+
+      // Persist SRS + history to SQLite
+      await this.syncPhraseSrsToServer(phrase.id, {
+        ...updatedData,
+        tags: localPhrase?.tags || phrase.tags
+      }, {
+        result: 'success',
+        stageBefore: previousStage,
+        stageAfter: nextStage,
+        reviewCount: nextReviewCount
+      });
 
       // Update queue item
       if (this.sessionQueue[this.currentSessionIndex]) {
@@ -578,6 +726,18 @@ export const useLearningStore = defineStore('learning', {
         Object.assign(localPhrase, updatedData);
       }
 
+      await this.syncPhraseSrsToServer(phrase.id, {
+        ...updatedData,
+        review_count: localPhrase?.review_count ?? phrase.review_count ?? 0,
+        is_deconstructed: localPhrase?.is_deconstructed ?? phrase.is_deconstructed ?? 0,
+        tags: localPhrase?.tags || phrase.tags
+      }, {
+        result: 'failure',
+        stageBefore: Number(phrase.stage_srs) || 0,
+        stageAfter: 1,
+        reviewCount: localPhrase?.review_count ?? phrase.review_count ?? 0
+      });
+
       this.skipCurrentPhrase();
     },
 
@@ -592,6 +752,13 @@ export const useLearningStore = defineStore('learning', {
         next_review: now - 1000
       };
       await db.phrases.update(phraseId, update);
+      const phrase = this.phrases.find((p) => p.id === phraseId);
+      if (phrase) Object.assign(phrase, update);
+      await this.syncPhraseSrsToServer(phraseId, {
+        ...update,
+        is_deconstructed: phrase?.is_deconstructed || 0,
+        tags: phrase?.tags
+      });
       await this.loadAllPhrases();
       this.startNewSession();
     },

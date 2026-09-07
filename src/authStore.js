@@ -29,7 +29,13 @@ export const useAuthStore = defineStore('auth', {
       return (f + l) || state.currentUser.email?.charAt(0).toUpperCase() || 'U';
     },
     userAvatar: (state) => {
-      return state.currentUser?.avatarUrl || null;
+      const url = state.currentUser?.avatarUrl || state.currentUser?.avatar || null;
+      // Emoji placeholders are not real photos — UI shows gradient instead
+      if (!url) return null;
+      if (typeof url === 'string' && url.startsWith('data:image/')) return url;
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) return url;
+      if (typeof url === 'string' && url.startsWith('blob:')) return url;
+      return null;
     },
     userGender: (state) => {
       return state.currentUser?.gender || 'male';
@@ -175,6 +181,7 @@ export const useAuthStore = defineStore('auth', {
       try {
         const learningStore = useLearningStore();
         learningStore.setUserGender(gender);
+        await learningStore.applyServerSrsProgress(newUser.id);
       } catch (e) {}
 
       // 4. Update communityStore immediately
@@ -252,6 +259,12 @@ export const useAuthStore = defineStore('auth', {
         try {
           const learningStore = useLearningStore();
           learningStore.setUserGender(user.gender);
+          await learningStore.applyServerSrsProgress(user.id);
+        } catch (e) {}
+      } else {
+        try {
+          const learningStore = useLearningStore();
+          await learningStore.applyServerSrsProgress(user.id);
         } catch (e) {}
       }
 
@@ -337,6 +350,10 @@ export const useAuthStore = defineStore('auth', {
       } catch (e) {
         console.warn('Storage cleanup warning:', e);
       }
+      try {
+        const learningStore = useLearningStore();
+        learningStore.resetLocalSrsToCanonical();
+      } catch (e) {}
       this.isProfileModalOpen = false;
       this.authMode = 'login';
       this.isAuthModalOpen = true;

@@ -13,23 +13,92 @@ class SpeechService {
     this.isListening = false;
     this.voicesLoaded = false;
     this.audioContext = null;
+    this._speakTimer = null;
+    this._activeAudio = null;
+    this._objectUrl = null;
+    this._ttsRequestId = 0;
+    this.preferServerTts = true;
 
     if (this.synth) {
       this.initVoices();
       if (this.synth.onvoiceschanged !== undefined) {
         this.synth.onvoiceschanged = () => this.initVoices();
       }
+      if (typeof setTimeout !== 'undefined') {
+        setTimeout(() => this.initVoices(), 250);
+        setTimeout(() => this.initVoices(), 1000);
+      }
     }
+  }
+
+  getAllVoices() {
+    if (!this.synth?.getVoices) return [];
+    try {
+      return this.synth.getVoices() || [];
+    } catch {
+      return [];
+    }
+  }
+
+  isThaiVoice(voice) {
+    if (!voice) return false;
+    const lang = String(voice.lang || '').toLowerCase().replace('_', '-');
+    const name = String(voice.name || '').toLowerCase();
+    return (
+      lang === 'th' ||
+      lang === 'th-th' ||
+      lang.startsWith('th-') ||
+      /thai|ไทย|ภาษาไทย/.test(name)
+    );
+  }
+
+  /**
+   * Rank Thai voices: prefer neural/cloud female (Google Thai / Premwadee / Kanya),
+   * avoid robotic local engines that sound like gibberish.
+   */
+  scoreThaiVoice(voice, preferredGender = 'female') {
+    if (!this.isThaiVoice(voice)) return -Infinity;
+    const name = String(voice.name || '').toLowerCase();
+    let score = 100;
+
+    if (/google|microsoft|natural|online|neural|premium|enhanced|wavenet/.test(name)) score += 60;
+    if (/espeak|festival|mbrola|compact|pico|flite/.test(name)) score -= 80;
+
+    const femaleHint = /female|woman|girl|kanya|premwadee|narisa|somsi|หญิง/.test(name);
+    const maleHint = /male|man|boy|niwat|somchai|ชาย/.test(name);
+
+    if (preferredGender === 'female') {
+      if (femaleHint) score += 40;
+      if (maleHint) score -= 35;
+      // Google's single Thai voice is female-sounding
+      if (/google/.test(name) && !maleHint) score += 25;
+    } else {
+      if (maleHint) score += 40;
+      if (femaleHint) score -= 35;
+    }
+
+    return score;
+  }
+
+  pickThaiVoice(preferredGender = 'female') {
+    const voices = this.getAllVoices();
+    const thaiVoices = voices.filter((v) => this.isThaiVoice(v));
+    if (thaiVoices.length === 0) return null;
+
+    thaiVoices.sort(
+      (a, b) => this.scoreThaiVoice(b, preferredGender) - this.scoreThaiVoice(a, preferredGender)
+    );
+    return thaiVoices[0];
   }
 
   initVoices() {
     if (!this.synth) return;
-    const voices = this.synth.getVoices();
-    if (!voices || voices.length === 0) return;
+    const voices = this.getAllVoices();
+    if (!voices.length) return;
 
-    // Search for a Thai voice (th-TH, th)
-    this.thaiVoice = voices.find((v) => v.lang === 'th-TH' || v.lang.toLowerCase().startsWith('th')) || null;
-    this.voicesLoaded = true;
+    // Default cache: best female Thai voice (historical app behavior)
+    this.thaiVoice = this.pickThaiVoice('female');
+    this.voicesLoaded = !!this.thaiVoice || voices.some((v) => this.isThaiVoice(v));
   }
 
   isSpeechSynthesisSupported() {
@@ -41,66 +110,209 @@ class SpeechService {
     return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
   }
 
+  hasThaiVoice() {
+    this.initVoices();
+    return !!this.pickThaiVoice('female') || !!this.thaiVoice;
+  }
+
   /**
-   * Speak Thai text using window.speechSynthesis (th-TH)
+   * Speak Thai via server neural TTS (same voice in all browsers).
+   * Falls back to browser speechSynthesis only if server TTS fails.
    */
   speakThai(thaiText, { onStart, onEnd, onError, rate = 0.82, gender = 'female' } = {}) {
+    const text = String(thaiText || '').trim();
+    if (!text) return;
+
+    if (!/[\u0E00-\u0E7F]/.test(text)) {
+      if (onError) onError(new Error('Нет тайского текста для озвучки.'));
+      return;
+    }
+
+    this.stopSpeaking();
+
+    const preferredGender = gender === 'male' ? 'male' : 'female';
+    const playbackRate = Math.min(1.4, Math.max(0.4, Number(rate) || 0.82));
+
+    if (this.preferServerTts) {
+      this.speakViaServer(text, {
+        gender: preferredGender,
+        rate: playbackRate,
+        onStart,
+        onEnd,
+        onError: (err) => {
+          console.warn('Server TTS failed, falling back to browser voices:', err);
+          this.speakViaBrowser(text, {
+            gender: preferredGender,
+            rate: playbackRate,
+            onStart,
+            onEnd,
+            onError
+          });
+        }
+      });
+      return;
+    }
+
+    this.speakViaBrowser(text, {
+      gender: preferredGender,
+      rate: playbackRate,
+      onStart,
+      onEnd,
+      onError
+    });
+  }
+
+  async speakViaServer(text, { gender, rate, onStart, onEnd, onError }) {
+    const requestId = ++this._ttsRequestId;
+    try {
+      // Always fetch natural-speed cached audio; speed is applied client-side.
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, gender })
+      });
+
+      if (requestId !== this._ttsRequestId) return;
+
+      if (!res.ok) {
+        let message = `TTS HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data?.error) message = data.error;
+        } catch (_) {}
+        throw new Error(message);
+      }
+
+      const blob = await res.blob();
+      if (requestId !== this._ttsRequestId) return;
+
+      if (!blob || blob.size < 100) {
+        throw new Error('Empty TTS audio');
+      }
+
+      if (this._objectUrl) {
+        URL.revokeObjectURL(this._objectUrl);
+        this._objectUrl = null;
+      }
+
+      const url = URL.createObjectURL(blob);
+      this._objectUrl = url;
+      const audio = new Audio(url);
+      audio.playbackRate = Math.min(1.4, Math.max(0.4, Number(rate) || 1));
+      // Keep pitch compensation off so Thai tones stay natural when slowing down
+      try {
+        audio.preservesPitch = true;
+      } catch (_) {}
+      this._activeAudio = audio;
+
+      audio.onplay = () => {
+        if (onStart) onStart();
+      };
+      audio.onended = () => {
+        if (this._activeAudio === audio) this._activeAudio = null;
+        if (this._objectUrl === url) {
+          URL.revokeObjectURL(url);
+          this._objectUrl = null;
+        }
+        if (onEnd) onEnd();
+      };
+      audio.onerror = () => {
+        if (this._activeAudio === audio) this._activeAudio = null;
+        if (this._objectUrl === url) {
+          URL.revokeObjectURL(url);
+          this._objectUrl = null;
+        }
+        if (onError) onError(new Error('Audio playback failed'));
+      };
+
+      await audio.play();
+    } catch (err) {
+      if (requestId !== this._ttsRequestId) return;
+      if (onError) onError(err);
+    }
+  }
+
+  speakViaBrowser(thaiText, { onStart, onEnd, onError, rate = 0.82, gender = 'female' } = {}) {
     if (!this.synth) {
       if (onError) onError(new Error('Синтез речи (TTS) не поддерживается в вашем браузере.'));
       return;
     }
 
-    this.synth.cancel();
+    const text = String(thaiText || '').trim();
+    if (!text) return;
 
-    if (!thaiText) return;
+    if (this._speakTimer) {
+      clearTimeout(this._speakTimer);
+      this._speakTimer = null;
+    }
 
-    const utterance = new SpeechSynthesisUtterance(thaiText);
-    utterance.lang = 'th-TH';
-    utterance.rate = rate; // Learners benefit from slightly slower pace
-    utterance.pitch = gender === 'female' ? 1.12 : 0.94;
+    try {
+      this.synth.cancel();
+    } catch (_) {}
 
-    const voices = this.synth.getVoices ? this.synth.getVoices() : [];
-    const thaiVoices = voices.filter((v) => v.lang === 'th-TH' || v.lang.toLowerCase().startsWith('th'));
-    if (thaiVoices.length > 1) {
-      if (gender === 'female') {
-        const femaleVoice = thaiVoices.find((v) => /female|woman|kanya|premwadee|narisa/i.test(v.name));
-        utterance.voice = femaleVoice || this.thaiVoice || thaiVoices[0];
-      } else {
-        const maleVoice = thaiVoices.find((v) => /male|man|niwat/i.test(v.name));
-        utterance.voice = maleVoice || this.thaiVoice || thaiVoices[0];
-      }
-    } else if (this.thaiVoice) {
-      utterance.voice = this.thaiVoice;
-    } else {
+    const preferredGender = gender === 'male' ? 'male' : 'female';
+
+    const run = () => {
       this.initVoices();
-      if (this.thaiVoice) {
-        utterance.voice = this.thaiVoice;
+      const voice = this.pickThaiVoice(preferredGender) || this.thaiVoice;
+
+      if (!voice) {
+        const err = new Error(
+          'Тайский голос не найден в браузере. Серверная озвучка тоже недоступна.'
+        );
+        if (onError) onError(err);
+        console.warn(err.message, this.getAllVoices().map((v) => `${v.name} [${v.lang}]`));
+        return;
       }
-    }
 
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.voice = voice;
+      utterance.lang = voice.lang || 'th-TH';
+      utterance.rate = Math.min(1.4, Math.max(0.4, Number(rate) || 0.82));
+      utterance.pitch = preferredGender === 'female' ? 1.05 : 0.98;
+      utterance.volume = 1;
 
-    utterance.onstart = () => {
-      if (onStart) onStart();
-    };
+      utterance.onstart = () => {
+        if (onStart) onStart();
+      };
+      utterance.onend = () => {
+        if (onEnd) onEnd();
+      };
+      utterance.onerror = (event) => {
+        if (event.error !== 'canceled' && onError) {
+          onError(event);
+        }
+      };
 
-    utterance.onend = () => {
-      if (onEnd) onEnd();
-    };
-
-    utterance.onerror = (event) => {
-      if (event.error !== 'canceled' && onError) {
-        onError(event);
+      if (this.synth.paused) {
+        try {
+          this.synth.resume();
+        } catch (_) {}
       }
+
+      this.synth.speak(utterance);
     };
 
-    if (this.synth.paused) {
-      this.synth.resume();
-    }
-
-    this.synth.speak(utterance);
+    this._speakTimer = setTimeout(run, 60);
   }
 
   stopSpeaking() {
+    this._ttsRequestId += 1;
+    if (this._speakTimer) {
+      clearTimeout(this._speakTimer);
+      this._speakTimer = null;
+    }
+    if (this._activeAudio) {
+      try {
+        this._activeAudio.pause();
+        this._activeAudio.src = '';
+      } catch (_) {}
+      this._activeAudio = null;
+    }
+    if (this._objectUrl) {
+      URL.revokeObjectURL(this._objectUrl);
+      this._objectUrl = null;
+    }
     if (this.synth) {
       this.synth.cancel();
     }

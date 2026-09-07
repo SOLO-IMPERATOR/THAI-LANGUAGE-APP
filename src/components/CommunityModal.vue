@@ -82,15 +82,15 @@
         <!-- Current User Status Card & Privacy Hint -->
         <div class="p-4 rounded-2xl bg-gradient-to-r from-indigo-50/90 to-amber-50/80 border border-indigo-100 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div class="flex items-center gap-3">
-            <div class="w-11 h-11 rounded-2xl bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-md shadow-indigo-200 flex-shrink-0">
-              <img
-                v-if="authStore.userAvatar"
-                :src="authStore.userAvatar"
-                alt="Ваш аватар"
-                class="w-full h-full object-cover rounded-2xl"
-              />
-              <span v-else>{{ authStore.userInitials }}</span>
-            </div>
+            <UserAvatar
+              :name="authStore.userFullName"
+              :email="authStore.currentUser?.email"
+              :photo-url="authStore.userAvatar"
+              :seed="authStore.currentUser?.id || authStore.currentUser?.email"
+              size-class="w-11 h-11"
+              text-class="text-sm"
+              rounded-class="rounded-2xl shadow-md shadow-indigo-200"
+            />
             <div>
               <div class="flex items-center gap-2">
                 <span class="text-xs font-bold text-slate-900">{{ authStore.userFullName }}</span>
@@ -144,22 +144,20 @@
               </div>
 
               <!-- Avatar -->
-              <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center flex-shrink-0 group-hover:ring-2 group-hover:ring-indigo-300 transition">
-                <!-- If private and NOT current user -> show anonymous mask -->
+              <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl overflow-hidden flex items-center justify-center flex-shrink-0 group-hover:ring-2 group-hover:ring-indigo-300 transition">
                 <template v-if="user.isPrivate && !isCurrentUser(user.id)">
-                  <span class="text-base">👤</span>
+                  <span class="text-base w-full h-full flex items-center justify-center bg-slate-100 border border-slate-200 rounded-2xl">👤</span>
                 </template>
-                <template v-else>
-                  <img
-                    v-if="user.avatarUrl"
-                    :src="user.avatarUrl"
-                    :alt="user.firstName"
-                    class="w-full h-full object-cover"
-                  />
-                  <span v-else class="text-indigo-700 font-black text-xs">
-                    {{ (user.firstName?.[0] || 'У') + (user.lastName?.[0] || '') }}
-                  </span>
-                </template>
+                <UserAvatar
+                  v-else
+                  :name="`${user.firstName || ''} ${user.lastName || ''}`"
+                  :email="user.email"
+                  :photo-url="user.avatarUrl"
+                  :seed="user.id || user.email"
+                  size-class="w-full h-full"
+                  text-class="text-xs"
+                  rounded-class="rounded-2xl"
+                />
               </div>
 
               <!-- User Info -->
@@ -395,10 +393,15 @@
                 class="p-3 bg-white border border-slate-100 rounded-2xl shadow-xs flex items-center justify-between gap-3"
               >
                 <div class="flex items-center gap-3">
-                  <div class="w-10 h-10 rounded-2xl overflow-hidden bg-indigo-50 border border-indigo-100 flex items-center justify-center font-bold text-indigo-700 text-xs">
-                    <img v-if="friend.avatarUrl" :src="friend.avatarUrl" class="w-full h-full object-cover" />
-                    <span v-else>{{ (friend.firstName?.[0] || 'Д') + (friend.lastName?.[0] || '') }}</span>
-                  </div>
+                  <UserAvatar
+                    :name="`${friend.firstName || ''} ${friend.lastName || ''}`"
+                    :email="friend.email"
+                    :photo-url="friend.avatarUrl"
+                    :seed="friend.id || friend.email"
+                    size-class="w-10 h-10"
+                    text-class="text-xs"
+                    rounded-class="rounded-2xl border border-indigo-100"
+                  />
                   <div>
                     <div class="text-xs font-bold text-slate-900">
                       {{ friend.firstName }} {{ friend.lastName }}
@@ -727,21 +730,20 @@
 
         <!-- Avatar & Header -->
         <div class="flex flex-col items-center text-center pt-1">
-          <div class="w-20 h-20 rounded-3xl overflow-hidden bg-slate-100 border-2 border-indigo-100 flex items-center justify-center shadow-xs">
+          <div class="w-20 h-20 rounded-3xl overflow-hidden flex items-center justify-center shadow-xs">
             <template v-if="previewUser.isPrivate && !isCurrentUser(previewUser.id)">
-              <span class="text-3xl">👤</span>
+              <span class="text-3xl w-full h-full flex items-center justify-center bg-slate-100 border-2 border-indigo-100 rounded-3xl">👤</span>
             </template>
-            <template v-else>
-              <img
-                v-if="previewUser.avatarUrl"
-                :src="previewUser.avatarUrl"
-                :alt="previewUser.firstName"
-                class="w-full h-full object-cover"
-              />
-              <span v-else class="text-2xl font-black text-indigo-700">
-                {{ (previewUser.firstName?.[0] || 'У') + (previewUser.lastName?.[0] || '') }}
-              </span>
-            </template>
+            <UserAvatar
+              v-else
+              :name="`${previewUser.firstName || ''} ${previewUser.lastName || ''}`"
+              :email="previewUser.email"
+              :photo-url="previewUser.avatarUrl"
+              :seed="previewUser.id || previewUser.email"
+              size-class="w-20 h-20"
+              text-class="text-2xl"
+              rounded-class="rounded-3xl border-2 border-indigo-100"
+            />
           </div>
 
           <h3 class="text-base font-bold text-slate-900 mt-3 flex items-center gap-1.5 justify-center">
@@ -856,6 +858,7 @@
 import { ref, computed } from 'vue';
 import { useCommunityStore } from '../communityStore.js';
 import { useAuthStore } from '../authStore.js';
+import UserAvatar from './UserAvatar.vue';
 
 const communityStore = useCommunityStore();
 const authStore = useAuthStore();

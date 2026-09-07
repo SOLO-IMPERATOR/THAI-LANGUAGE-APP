@@ -1,5 +1,5 @@
 import Dexie from 'dexie';
-import { PHRASES_1000 } from './phrasesData.js';
+import { getCanonicalPhrases, loadCanonicalPhrases } from './phrasesData.js';
 
 export const db = new Dexie('ThaiSpokenPwaDB');
 
@@ -28,9 +28,17 @@ db.version(3).stores({
   room_messages: '++id, roomId, senderId, timestamp'
 });
 
-export const INITIAL_PHRASES = PHRASES_1000;
+/** Canonical phrases from SQLite API (filled during initDatabase). */
+export let INITIAL_PHRASES = [];
 
 export async function initDatabase() {
+  try {
+    INITIAL_PHRASES = await loadCanonicalPhrases();
+  } catch (loadErr) {
+    console.warn('Failed to load phrases from SQLite API:', loadErr);
+    INITIAL_PHRASES = getCanonicalPhrases();
+  }
+
   try {
     if (!db.isOpen()) {
       await db.open();
@@ -47,10 +55,15 @@ export async function initDatabase() {
   }
 
   try {
+    if (!INITIAL_PHRASES.length) {
+      console.warn('No canonical phrases available for Dexie sync');
+      return;
+    }
+
     const count = await db.phrases.count();
     const existingPhrases = count > 0 ? await db.phrases.toArray() : [];
     
-    // Check if re-sync to canonical 900 phrases is needed
+    // Check if re-sync to canonical phrases is needed
     const needsResync = count !== INITIAL_PHRASES.length ||
       existingPhrases.some((p) => !p.female || !p.male || (p.russian && p.russian.includes('Полезная разговорная фраза')));
 

@@ -66,10 +66,10 @@
             alt="Фото профиля"
             class="w-full h-full object-cover"
           />
-          <!-- Fallback Initials / Glyph -->
           <div
             v-else
-            class="w-full h-full flex items-center justify-center bg-gradient-to-br from-indigo-500 to-indigo-700 text-white text-2xl font-black"
+            class="w-full h-full flex items-center justify-center text-white text-2xl font-black"
+            :style="{ backgroundImage: profileGradient }"
           >
             {{ authStore.userInitials }}
           </div>
@@ -404,12 +404,24 @@
 import { ref, reactive, computed, watch } from 'vue';
 import { useAuthStore } from '../authStore.js';
 import { useLearningStore } from '../useLearningStore.js';
+import { gradientForSeed, isRealPhotoUrl } from '../avatarUtils.js';
 
 const authStore = useAuthStore();
 const learningStore = useLearningStore();
 
 const isOpen = computed(() => authStore.isProfileModalOpen);
-const userPhoto = computed(() => authStore.currentUser?.avatarUrl || '');
+const userPhoto = computed(() => {
+  const url = authStore.currentUser?.avatarUrl || '';
+  return isRealPhotoUrl(url) ? url : '';
+});
+const profileGradient = computed(() =>
+  gradientForSeed(
+    authStore.currentUser?.id ||
+      authStore.currentUser?.email ||
+      authStore.userFullName ||
+      'user'
+  )
+);
 
 const isDraggingOver = ref(false);
 const isSaving = ref(false);

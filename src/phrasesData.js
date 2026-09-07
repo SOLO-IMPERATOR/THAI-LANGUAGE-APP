@@ -1,15 +1,26 @@
 /**
- * 900 Popular Conversational Thai Phrases
- * Categorized, tonal transcriptions in practical Russian transcription,
- * accurate Russian translations, zero duplicates, gender-adapted (kha / khap).
- * Sawatdee khap and Sawatdee kha are the SAME phrase adapted to the user's gender.
+ * Gender helpers and canonical phrases loader.
+ * Source of truth for phrases is SQLite via /api/phrases.
  */
 
-import phrasesData from '../data/thai_phrases_database.json';
+let cachedPhrases = [];
 
-export const PHRASES_900 = phrasesData;
-// Kept for backward compatibility across imports
-export const PHRASES_1000 = phrasesData;
+export function getCanonicalPhrases() {
+  return cachedPhrases;
+}
+
+export async function loadCanonicalPhrases() {
+  const res = await fetch('/api/phrases');
+  if (!res.ok) {
+    throw new Error(`Failed to load phrases: ${res.status}`);
+  }
+  const data = await res.json();
+  if (!Array.isArray(data) || data.length === 0) {
+    throw new Error('Phrases API returned empty data');
+  }
+  cachedPhrases = data;
+  return cachedPhrases;
+}
 
 /**
  * Returns a phrase adapted for the active user's gender (male: khrap / female: kha)
@@ -128,4 +139,3 @@ export function getGenderedPhrase(phrase, gender = 'male') {
     words_breakdown: adaptedWords
   };
 }
-
