@@ -145,10 +145,10 @@
 
       <!-- Card Main Body -->
       <div class="my-auto py-5 flex flex-col items-center text-center w-full">
-        <!-- ========== RECALL PHASE: only Russian prompt ========== -->
+        <!-- ========== RECALL PHASE: Russian only → Проверить / Забыл ========== -->
         <template v-if="cardPhase === 'recall'">
           <div class="mb-2 text-[11px] uppercase tracking-widest text-emerald-600 font-black">
-            Припоминание • зачёт только здесь
+            Финальная проверка в сессии
           </div>
           <div class="mt-1 mb-5 px-5 py-4 rounded-3xl bg-emerald-50 border border-emerald-200 inline-block max-w-xl w-full">
             <span class="text-[10px] text-emerald-700/80 font-bold uppercase tracking-wider block mb-1">
@@ -159,7 +159,18 @@
             </p>
           </div>
 
-          <div class="w-full max-w-lg space-y-3 text-left">
+          <!-- Check panel opened by «Проверить» -->
+          <div
+            v-if="isRecallChecking"
+            class="w-full max-w-lg space-y-3 text-left p-4 rounded-3xl bg-slate-50 border border-slate-200"
+          >
+            <div class="flex items-center justify-between">
+              <h4 class="text-xs font-black uppercase tracking-wider text-slate-900">Проверка ответа</h4>
+              <button type="button" class="text-xs font-bold text-slate-400 hover:text-slate-600 cursor-pointer" @click="closeRecallCheck">
+                ✕
+              </button>
+            </div>
+
             <label class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
               Введите транскрипцию или тайский текст
             </label>
@@ -168,7 +179,7 @@
               @keyup.enter="submitRecallAnswer"
               type="text"
               placeholder="например: саватдии кхап / สวัสดีครับ"
-              class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              class="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
 
             <div class="flex flex-col items-center py-2">
@@ -189,13 +200,16 @@
                 </svg>
               </button>
               <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Слушаю… говорите на тайском' : 'или произнесите фразу' }}
+                {{ isListening ? 'Слушаю… говорите на тайском' : 'или произнесите фразу (≥ 60%)' }}
               </span>
             </div>
 
             <div v-if="spokenThaiText" class="p-3 bg-white rounded-2xl border border-slate-200 text-center">
               <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider block mb-1">Распознано:</span>
               <div class="text-base font-bold text-slate-900">{{ spokenThaiText }}</div>
+              <div v-if="pronunciationAnalysis" class="text-xs mt-1 font-bold" :class="pronunciationAnalysis.score >= 60 ? 'text-emerald-700' : 'text-amber-700'">
+                {{ pronunciationAnalysis.score }}%
+              </div>
             </div>
 
             <p v-if="recallFeedback" class="text-xs font-bold text-center" :class="recallOk ? 'text-emerald-700' : 'text-rose-600'">
@@ -211,11 +225,12 @@
                 Проверить ответ
               </button>
               <button
-                @click="handleForgot"
+                @click="creditRecallWithoutSpeech"
                 type="button"
-                class="sm:w-auto px-4 py-3 rounded-2xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold cursor-pointer"
+                class="flex-1 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold uppercase tracking-wider cursor-pointer"
+                title="Если не можете говорить — засчитать вручную"
               >
-                Забыл
+                Засчитать
               </button>
             </div>
           </div>
@@ -624,10 +639,9 @@
       </div>
 
       <!-- Footer Action Area -->
-      <!-- Order: Проверить → Учить → Пропустить (+ Забыл) -->
+      <!-- Practice: Проверить → Учить → Пропустить -->
       <div v-if="cardPhase === 'practice'" class="w-full pt-4 border-t border-slate-100">
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full">
-          <!-- 1. Проверить (голосовая проверка) -->
           <button
             @click="handleAlreadyKnow"
             class="h-13 sm:h-14 bg-indigo-600 text-white font-bold rounded-2xl shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-98 transition text-xs uppercase tracking-wider flex items-center justify-center gap-2"
@@ -639,7 +653,6 @@
             </svg>
           </button>
 
-          <!-- 2. Учить -->
           <button
             @click="handleLearn"
             class="h-13 sm:h-14 bg-indigo-50 text-indigo-700 border border-indigo-200/80 font-bold rounded-2xl hover:bg-indigo-100 active:scale-98 transition text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-xs"
@@ -651,7 +664,6 @@
             </svg>
           </button>
 
-          <!-- 3. Пропустить -->
           <button
             @click="handleSkip"
             class="h-13 sm:h-14 bg-slate-100 text-slate-700 font-bold rounded-2xl hover:bg-slate-200 active:scale-98 transition text-xs uppercase tracking-wider flex items-center justify-center shadow-xs"
@@ -660,13 +672,29 @@
             Пропустить
           </button>
         </div>
-        <button
-          @click="handleForgot"
-          type="button"
-          class="mt-3 w-full h-11 rounded-2xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold uppercase tracking-wider cursor-pointer"
-        >
-          Забыл
-        </button>
+      </div>
+
+      <!-- Recall: only Проверить + Забыл -->
+      <div v-else-if="cardPhase === 'recall'" class="w-full pt-4 border-t border-slate-100">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
+          <button
+            @click="openRecallCheck"
+            class="h-13 sm:h-14 bg-indigo-600 text-white font-bold rounded-2xl shadow-lg shadow-indigo-200 hover:bg-indigo-700 active:scale-98 transition text-xs uppercase tracking-wider flex items-center justify-center gap-2"
+            type="button"
+          >
+            <span>Проверить</span>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            </svg>
+          </button>
+          <button
+            @click="handleForgot"
+            type="button"
+            class="h-13 sm:h-14 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold rounded-2xl text-xs uppercase tracking-wider cursor-pointer"
+          >
+            Забыл
+          </button>
+        </div>
       </div>
     </div>
 
@@ -737,9 +765,11 @@ const isLearningExpanded = ref(false);
 const isTestingPronunciation = ref(false);
 /** practice | recall | forgot */
 const cardPhase = ref('practice');
+const isRecallChecking = ref(false);
 const recallInput = ref('');
 const recallFeedback = ref('');
 const recallOk = ref(false);
+const RECALL_VOICE_MIN = 60;
 
 const isListening = ref(false);
 const isSpeechSupported = ref(speechService.isSpeechRecognitionSupported());
@@ -763,6 +793,7 @@ watch(
     isLearningExpanded.value = false;
     isTestingPronunciation.value = false;
     cardPhase.value = 'practice';
+    isRecallChecking.value = false;
     recallInput.value = '';
     recallFeedback.value = '';
     recallOk.value = false;
@@ -840,9 +871,12 @@ function handleRepeatInSession() {
 }
 
 function handleForgot() {
+  // Only available on recall confirmation cards
+  if (cardPhase.value !== 'recall') return;
   stopListening();
   isLearningExpanded.value = false;
   isTestingPronunciation.value = false;
+  isRecallChecking.value = false;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
   cardPhase.value = 'forgot';
@@ -851,6 +885,7 @@ function handleForgot() {
 function finishForgotWithoutCredit() {
   stopListening();
   cardPhase.value = 'practice';
+  isRecallChecking.value = false;
   isLearningExpanded.value = false;
   isTestingPronunciation.value = false;
   spokenThaiText.value = '';
@@ -863,12 +898,24 @@ function enterRecallPhase() {
   stopListening();
   isLearningExpanded.value = false;
   isTestingPronunciation.value = false;
+  isRecallChecking.value = false;
   recallInput.value = '';
   recallFeedback.value = '';
   recallOk.value = false;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
   cardPhase.value = 'recall';
+}
+
+function openRecallCheck() {
+  isRecallChecking.value = true;
+  recallFeedback.value = '';
+  recallOk.value = false;
+}
+
+function closeRecallCheck() {
+  stopListening();
+  isRecallChecking.value = false;
 }
 
 function closePronunciationTest() {
@@ -888,8 +935,8 @@ function startThaiListening() {
       if (phrase.value && (final || interim)) {
         try {
           pronunciationAnalysis.value = speechService.analyzeThaiPronunciation(text, phrase.value);
-          if (cardPhase.value === 'recall' && pronunciationAnalysis.value?.score >= 70) {
-            recallFeedback.value = `Похоже верно (${pronunciationAnalysis.value.score}%) — нажмите «Проверить ответ»`;
+          if (cardPhase.value === 'recall' && pronunciationAnalysis.value?.score >= RECALL_VOICE_MIN) {
+            recallFeedback.value = `Похоже верно (${pronunciationAnalysis.value.score}%) — можно нажать «Проверить ответ»`;
             recallOk.value = true;
           }
         } catch (analysisErr) {
@@ -907,8 +954,8 @@ function startThaiListening() {
       if (phrase.value && finalText) {
         try {
           pronunciationAnalysis.value = speechService.analyzeThaiPronunciation(finalText, phrase.value);
-          if (cardPhase.value === 'recall' && pronunciationAnalysis.value?.score >= 70) {
-            recallFeedback.value = `Похоже верно (${pronunciationAnalysis.value.score}%) — нажмите «Проверить ответ»`;
+          if (cardPhase.value === 'recall' && pronunciationAnalysis.value?.score >= RECALL_VOICE_MIN) {
+            recallFeedback.value = `Похоже верно (${pronunciationAnalysis.value.score}%) — можно нажать «Проверить ответ»`;
             recallOk.value = true;
           }
         } catch (analysisErr) {
@@ -934,6 +981,19 @@ function toggleThaiListening() {
   }
 }
 
+async function creditRecallWithoutSpeech() {
+  // Manual credit for users who cannot speak
+  stopListening();
+  if (!phrase.value || cardPhase.value !== 'recall') return;
+  recallOk.value = true;
+  recallFeedback.value = 'Засчитано вручную';
+  const res = await store.handleSuccess(phrase.value);
+  deconstructResult.value = res;
+  cardPhase.value = 'practice';
+  isRecallChecking.value = false;
+  recallInput.value = '';
+}
+
 async function submitRecallAnswer() {
   stopListening();
   if (!phrase.value) return;
@@ -943,31 +1003,31 @@ async function submitRecallAnswer() {
   let match = { ok: false, score: 0 };
 
   if (typed) {
-    match = speechService.matchesPhraseAnswer(typed, phrase.value, 70);
+    match = speechService.matchesPhraseAnswer(typed, phrase.value, RECALL_VOICE_MIN);
   }
   if (!match.ok && spoken) {
-    match = speechService.matchesPhraseAnswer(spoken, phrase.value, 70);
+    match = speechService.matchesPhraseAnswer(spoken, phrase.value, RECALL_VOICE_MIN);
   }
-  if (!match.ok && pronunciationAnalysis.value?.score >= 70) {
+  if (!match.ok && pronunciationAnalysis.value?.score >= RECALL_VOICE_MIN) {
     match = { ok: true, score: pronunciationAnalysis.value.score, via: 'speech' };
   }
 
   if (!match.ok) {
     recallOk.value = false;
-    recallFeedback.value = 'Пока неверно. Введите транскрипцию / тайский или произнесите ещё раз.';
+    recallFeedback.value = `Нужно ≥ ${RECALL_VOICE_MIN}% или точный ввод. Попробуйте ещё раз.`;
     return;
   }
 
   recallOk.value = true;
-  recallFeedback.value = `Верно (${match.score}%) — засчитываем!`;
+  recallFeedback.value = `Верно (${match.score}%) — фраза запомнена!`;
   const res = await store.handleSuccess(phrase.value);
   deconstructResult.value = res;
   cardPhase.value = 'practice';
+  isRecallChecking.value = false;
   recallInput.value = '';
 }
 
 async function acceptVerificationAndAdvance() {
-  // Legacy path — now goes through recall
   enterRecallPhase();
 }
 
