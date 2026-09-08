@@ -499,6 +499,14 @@
             </div>
             <div class="flex items-center gap-2">
               <button
+                v-if="isRoomCreator"
+                type="button"
+                @click="handleDeleteRoom(communityStore.activeRoom)"
+                class="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-black cursor-pointer"
+              >
+                Удалить
+              </button>
+              <button
                 v-if="!communityStore.voiceEnabled"
                 type="button"
                 @click="toggleVoice"
@@ -764,6 +772,15 @@
                   "
                 >
                   {{ isRoomMember(room) ? 'Войти в чат' : room.requireApproval ? 'Запросить доступ' : 'Присоединиться' }}
+                </button>
+                <button
+                  v-if="String(room.creatorId) === String(currentUserId)"
+                  @click="handleDeleteRoom(room)"
+                  type="button"
+                  class="px-3 py-2 rounded-xl text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 cursor-pointer"
+                  title="Удалить комнату"
+                >
+                  Удалить
                 </button>
               </div>
             </div>
@@ -1095,6 +1112,17 @@ async function handleCreateRoom() {
   newRoomRequireApproval.value = false;
   if (room) communityStore.openRoom(room);
   else noticeMessage.value = 'Не удалось создать комнату.';
+}
+
+async function handleDeleteRoom(room) {
+  if (!room?.id || !currentUserId.value) return;
+  if (!confirm(`Удалить комнату «${room.title}»?`)) return;
+  const res = await communityStore.deleteRoom(room.id);
+  if (res.ok) {
+    noticeMessage.value = 'Комната удалена.';
+  } else {
+    noticeMessage.value = res.error || 'Не удалось удалить комнату.';
+  }
 }
 
 async function handleSendRoomMessage() {

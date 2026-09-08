@@ -355,14 +355,22 @@
       </div>
     </main>
 
-    <!-- Footer Meta (Tech list removed, app renamed) -->
+    <!-- Footer Meta -->
     <footer class="mt-auto border-t border-slate-200/80 px-4 md:px-8 py-5 text-center text-xs text-slate-500">
       <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
         <div class="font-medium text-slate-600">
           Тайский фразовик • Тренажер разговорного тайского языка
         </div>
-        <div class="text-[11px] text-slate-400 font-medium">
-          Интервальное повторение SRS • Практическая транскрипция
+        <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-[11px] text-slate-400 font-medium">
+          <span>Интервальное повторение SRS • Практическая транскрипция</span>
+          <a
+            href="https://soloimperator.tech/"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-indigo-600 hover:text-indigo-800 font-bold transition"
+          >
+            разработчик solo_imperator
+          </a>
         </div>
       </div>
     </footer>

@@ -324,6 +324,34 @@ function join_room(string $roomId, string $userId): array
     return ['ok' => true, 'status' => 'joined', 'room' => map_room_row($room, $members, $pending)];
 }
 
+function delete_room(string $roomId, string $userId): array
+{
+    if ($roomId === '' || $userId === '') {
+        return ['ok' => false, 'error' => 'Нужны roomId и userId'];
+    }
+    $pdo = db();
+    $stmt = $pdo->prepare('SELECT * FROM rooms WHERE id = ? LIMIT 1');
+    $stmt->execute([$roomId]);
+    $room = $stmt->fetch();
+    if (!$room) {
+        return ['ok' => false, 'error' => 'Комната не найдена'];
+    }
+    if (sid($room['creator_id']) !== $userId) {
+        return ['ok' => false, 'error' => 'Удалить может только создатель'];
+    }
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare('DELETE FROM voice_signals WHERE room_id = ?')->execute([$roomId]);
+        $pdo->prepare('DELETE FROM voice_presence WHERE room_id = ?')->execute([$roomId]);
+        $pdo->prepare('DELETE FROM rooms WHERE id = ?')->execute([$roomId]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+    return ['ok' => true, 'deletedId' => $roomId];
+}
+
 function approve_room_member(string $roomId, string $creatorId, string $userId, bool $approve): array
 {
     $pdo = db();

@@ -622,6 +622,28 @@ export const useCommunityStore = defineStore('community', {
       await this.syncSocial();
     },
 
+    async deleteRoom(roomId) {
+      const userId = sid(this.pollUserId);
+      if (!userId || !roomId) return { ok: false, error: 'Нет доступа' };
+      try {
+        const res = await this.apiJson(`/api/rooms/${encodeURIComponent(sid(roomId))}/delete`, {
+          method: 'POST',
+          body: JSON.stringify({ userId })
+        });
+        if (res.ok) {
+          this.rooms = this.rooms.filter((r) => !idEq(r.id, roomId));
+          if (this.activeRoom && idEq(this.activeRoom.id, roomId)) {
+            await this.stopVoiceChat();
+            this.activeRoom = null;
+          }
+          await this.syncSocial();
+        }
+        return res;
+      } catch (e) {
+        return { ok: false, error: e.message };
+      }
+    },
+
     inviteFriendToRoom(roomId, friendId) {
       // Joining as member via create invite is handled at create time;
       // for live invite, approve-style join as member:

@@ -260,6 +260,16 @@ try {
         json_response($res, !empty($res['ok']) ? 200 : 400);
     }
 
+    if (
+        (preg_match('#^/rooms/([^/]+)$#', $path, $m) && $method === 'DELETE') ||
+        (preg_match('#^/rooms/([^/]+)/delete$#', $path, $m) && $method === 'POST')
+    ) {
+        $body = $method === 'POST' ? read_json_body() : [];
+        $userId = sid($body['userId'] ?? $_GET['userId'] ?? '');
+        $res = delete_room(sid($m[1]), $userId);
+        json_response($res, !empty($res['ok']) ? 200 : 400);
+    }
+
     if (preg_match('#^/rooms/([^/]+)/approve$#', $path, $m) && $method === 'POST') {
         $body = read_json_body();
         $res = approve_room_member(sid($m[1]), sid($body['creatorId'] ?? ''), sid($body['userId'] ?? ''), true);

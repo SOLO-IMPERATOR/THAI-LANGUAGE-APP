@@ -651,6 +651,57 @@ class SpeechService {
       syllableResults
     };
   }
+
+  /**
+   * Normalize Russian practical transcription for typed recall answers.
+   */
+  normalizeTranscription(text) {
+    if (!text) return '';
+    return String(text)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/[^a-zа-я0-9]/gi, '');
+  }
+
+  /**
+   * Check typed or spoken answer against phrase (Thai script or RU transcription).
+   */
+  matchesPhraseAnswer(input, phrase, minSpeechScore = 70) {
+    if (!phrase) return { ok: false, score: 0, via: null };
+    const raw = String(input || '').trim();
+    if (!raw) return { ok: false, score: 0, via: null };
+
+    const hasThai = /[\u0E00-\u0E7F]/.test(raw);
+    if (hasThai) {
+      const spoken = this.normalizeThai(raw);
+      const target = this.normalizeThai(phrase.thai_hidden);
+      if (!spoken || !target) return { ok: false, score: 0, via: null };
+      if (spoken === target) return { ok: true, score: 100, via: 'thai' };
+      const dist = this.levenshtein(spoken, target);
+      const score = Math.max(0, Math.round((1 - dist / Math.max(target.length, 1)) * 100));
+      return { ok: score >= minSpeechScore, score, via: 'thai' };
+    }
+
+    const typed = this.normalizeTranscription(raw);
+    const targetRu = this.normalizeTranscription(phrase.transcription_ru);
+    if (typed && targetRu) {
+      if (typed === targetRu) return { ok: true, score: 100, via: 'transcription' };
+      const dist = this.levenshtein(typed, targetRu);
+      const score = Math.max(0, Math.round((1 - dist / Math.max(targetRu.length, 1)) * 100));
+      if (score >= minSpeechScore) return { ok: true, score, via: 'transcription' };
+    }
+
+    // Fallback: treat as spoken Thai via STT text
+    const analysis = this.analyzeThaiPronunciation(raw, phrase);
+    return {
+      ok: analysis.score >= minSpeechScore,
+      score: analysis.score,
+      via: 'speech',
+      analysis
+    };
+  }
 }
 
 export const speechService = new SpeechService();
