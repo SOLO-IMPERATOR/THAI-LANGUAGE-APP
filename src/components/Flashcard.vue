@@ -855,6 +855,7 @@ let stoppingListen = false;
 let sttSilenceTimer = null;
 let hardMaxTimer = null;
 let mediaCapturePromise = null;
+let didFinalizeThisListen = false;
 
 const SILENCE_STOP_MS = 1400;
 const MIN_UTTERANCE_MS = 900;
@@ -1102,6 +1103,8 @@ function playUserRecording() {
 
 function finalizePronunciation(finalText) {
   if (!phrase.value || !finalText) return;
+  if (didFinalizeThisListen) return;
+  didFinalizeThisListen = true;
   try {
     pronunciationAnalysis.value = speechService.analyzeThaiPronunciation(finalText, phrase.value, {
       playCue: true
@@ -1276,6 +1279,7 @@ async function startThaiListening() {
   pendingFinalize = true;
   firstSpeechAt = 0;
   listenStartedAt = Date.now();
+  didFinalizeThisListen = false;
   clearUserRecording();
   if (mediaRecorder || mediaStream) {
     try {
@@ -1296,8 +1300,6 @@ async function startThaiListening() {
         spokenThaiText.value = text;
         if (!firstSpeechAt) firstSpeechAt = Date.now();
         scheduleSttSilenceStop();
-        // Start local recording once STT is clearly working
-        ensureMediaCapture();
       }
     },
     onError: (err) => {
@@ -1307,19 +1309,21 @@ async function startThaiListening() {
       recognitionHandle = null;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
       if (finalText) spokenThaiText.value = finalText;
-      if (pendingFinalize && finalText) {
+      // Browser ended the only STT session — finalize (silence timer / manual stop also finalize)
+      if (isListening.value) {
+        stopListening({ skipAnalyze: false });
+      } else if (pendingFinalize && finalText) {
         pendingFinalize = false;
         finalizePronunciation(finalText);
       }
-      isListening.value = false;
       stoppingListen = false;
     }
   });
 
-  // Always try to capture own voice (desktop + mobile) after STT warms up
+  // Own-voice recording: one delayed getUserMedia (not on every STT chunk)
   setTimeout(() => {
     if (isListening.value) ensureMediaCapture();
-  }, 800);
+  }, 900);
 }
 
 function stopListening({ skipAnalyze = false } = {}) {

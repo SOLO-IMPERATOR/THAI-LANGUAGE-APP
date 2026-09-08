@@ -338,7 +338,7 @@ class SpeechService {
     recognition.lang = 'th-TH';
     recognition.interimResults = true;
     recognition.continuous = !!continuous;
-    recognition.maxAlternatives = 5;
+    recognition.maxAlternatives = 3;
 
     let finalTranscript = '';
     let endedIntentionally = false;
@@ -372,8 +372,8 @@ class SpeechService {
 
     recognition.onerror = (event) => {
       const errName = event?.error || '';
-      // Benign: no-speech / aborted while still wanting to listen
-      if (this._recognitionWantOpen && (errName === 'no-speech' || errName === 'aborted')) {
+      // Let onend handle session close; don't thrash mic on benign errors
+      if (errName === 'no-speech' || errName === 'aborted') {
         return;
       }
       this.isListening = false;
@@ -384,20 +384,10 @@ class SpeechService {
 
     recognition.onend = () => {
       this.activeRecognition = null;
-      // Browser often ends mid-phrase; restart until caller stops intentionally
-      if (this._recognitionWantOpen && continuous && !endedIntentionally) {
-        try {
-          recognition.start();
-          this.activeRecognition = recognition;
-          return;
-        } catch (_) {
-          // fall through to finish
-        }
-      }
-
       this.isListening = false;
       this._recognitionWantOpen = false;
-      if (onEnd) onEnd(finalTranscript.trim());
+      // Never auto-restart: each start() re-opens the mic and plays system sounds
+      if (onEnd) onEnd(finalTranscript.trim(), { intentional: endedIntentionally });
     };
 
     try {
