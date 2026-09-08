@@ -200,7 +200,7 @@
                 </svg>
               </button>
               <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Слушаю… договорите и нажмите микрофон снова' : 'или произнесите фразу целиком (≥ 60%)' }}
+                {{ isListening ? 'Слушаю… остановится после паузы' : 'или произнесите фразу целиком (≥ 60%)' }}
               </span>
             </div>
 
@@ -516,7 +516,7 @@
             </button>
 
             <span class="text-xs font-bold mt-2 text-slate-700">
-              {{ isListening ? 'Слушаю… договорите фразу и нажмите микрофон ещё раз' : 'Нажмите микрофон, произнесите фразу целиком, затем остановите' }}
+              {{ isListening ? 'Слушаю… после паузы запись остановится сама' : 'Нажмите микрофон и произнесите фразу целиком' }}
             </span>
           </div>
 
@@ -641,6 +641,37 @@
                 <span class="ml-1">→</span>
               </button>
             </div>
+          </div>
+
+          <!-- Fallback: show Запомнил after speech even if analysis panel failed -->
+          <div
+            v-else-if="spokenThaiText && !isListening"
+            class="flex flex-wrap items-center justify-between gap-2 pt-3"
+          >
+            <div class="flex flex-wrap gap-2">
+              <button
+                @click="playAudio()"
+                type="button"
+                class="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 border border-slate-200 text-xs font-bold cursor-pointer"
+              >
+                🔊 Эталон
+              </button>
+              <button
+                v-if="userRecordingUrl"
+                @click="playUserRecording"
+                type="button"
+                class="px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold cursor-pointer"
+              >
+                🎤 Моя запись
+              </button>
+            </div>
+            <button
+              @click="enterRecallPhase"
+              type="button"
+              class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold uppercase tracking-wider cursor-pointer"
+            >
+              Запомнил →
+            </button>
           </div>
         </div>
 
@@ -812,6 +843,35 @@ let mediaChunks = [];
 let userRecAudio = null;
 let recognitionHandle = null;
 let pendingFinalize = false;
+let silenceTimer = null;
+let firstSpeechAt = 0;
+let lastSpeechAt = 0;
+
+const SILENCE_STOP_MS = 2000; // auto-stop after quiet pause
+const MIN_UTTERANCE_MS = 1000; // don't cut off too early mid-phrase
+
+function clearSilenceTimer() {
+  if (silenceTimer) {
+    clearTimeout(silenceTimer);
+    silenceTimer = null;
+  }
+}
+
+function scheduleAutoStop() {
+  clearSilenceTimer();
+  silenceTimer = setTimeout(() => {
+    silenceTimer = null;
+    if (!isListening.value) return;
+    const spokenFor = Date.now() - (firstSpeechAt || Date.now());
+    if (!spokenThaiText.value.trim()) return;
+    if (spokenFor < MIN_UTTERANCE_MS) {
+      // Still too early — wait another silence window
+      scheduleAutoStop();
+      return;
+    }
+    stopListening({ skipAnalyze: false });
+  }, SILENCE_STOP_MS);
+}
 
 function clearUserRecording() {
   if (userRecAudio) {
@@ -947,6 +1007,7 @@ watch(
     deconstructResult.value = null;
     showTagInput.value = false;
     stopListening({ skipAnalyze: true });
+    clearSilenceTimer();
     clearUserRecording();
     cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
   }
@@ -954,6 +1015,7 @@ watch(
 
 onUnmounted(() => {
   speechService.stopSpeaking();
+  clearSilenceTimer();
   stopListening({ skipAnalyze: true });
   clearUserRecording();
   stopMediaCapture();
@@ -1077,24 +1139,39 @@ function closePronunciationTest() {
 async function startThaiListening() {
   if (!isSpeechSupported.value || isListening.value) return;
 
+  clearSilenceTimer();
   isListening.value = true;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
   pendingFinalize = true;
-  await startMediaCapture();
+  firstSpeechAt = 0;
+  lastSpeechAt = 0;
 
+  // STT first, then optional local recording (avoids mic lock on some phones)
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
-    onResult: ({ text }) => {
-      // Live transcript only — no scoring while still speaking
+    onResult: ({ text, interim, final }) => {
       spokenThaiText.value = text;
+      if (!text.trim()) return;
+      const now = Date.now();
+      if (!firstSpeechAt) firstSpeechAt = now;
+      lastSpeechAt = now;
+      // Score only after auto/manual stop — but keep extending silence timer
+      scheduleAutoStop();
     },
     onError: (err) => {
       console.warn('Thai STT error:', err);
+      clearSilenceTimer();
       isListening.value = false;
       stopMediaCapture();
+      // Still try to score whatever we caught
+      if (pendingFinalize && spokenThaiText.value.trim()) {
+        pendingFinalize = false;
+        finalizePronunciation(spokenThaiText.value);
+      }
     },
     onEnd: (finalTranscript) => {
+      clearSilenceTimer();
       isListening.value = false;
       recognitionHandle = null;
       try {
@@ -1102,13 +1179,20 @@ async function startThaiListening() {
       } catch (_) {}
       if (!pendingFinalize) return;
       pendingFinalize = false;
-      const finalText = finalTranscript || spokenThaiText.value;
-      finalizePronunciation(finalText);
+      const finalText = (finalTranscript || spokenThaiText.value || '').trim();
+      if (finalText) {
+        spokenThaiText.value = finalText;
+        finalizePronunciation(finalText);
+      }
     }
   });
+
+  // Non-blocking: own-voice playback blob for this card
+  startMediaCapture().catch(() => {});
 }
 
 function stopListening({ skipAnalyze = false } = {}) {
+  clearSilenceTimer();
   if (skipAnalyze) pendingFinalize = false;
 
   if (recognitionHandle?.stop) {
@@ -1128,18 +1212,18 @@ function stopListening({ skipAnalyze = false } = {}) {
     return;
   }
 
-  // onEnd usually finalizes; fallback if recognition already closed
+  // Fallback if onEnd didn't run (some browsers)
   setTimeout(() => {
     if (pendingFinalize) {
       pendingFinalize = false;
-      finalizePronunciation(spokenThaiText.value);
+      const text = (spokenThaiText.value || '').trim();
+      if (text) finalizePronunciation(text);
     }
-  }, 200);
+  }, 300);
 }
 
 function toggleThaiListening() {
   if (isListening.value) {
-    // User finished speaking — stop & score
     stopListening({ skipAnalyze: false });
   } else {
     startThaiListening();
