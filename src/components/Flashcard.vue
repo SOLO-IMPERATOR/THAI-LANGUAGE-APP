@@ -189,7 +189,7 @@
                 @pointercancel.prevent="onPttUp"
                 @lostpointercapture="onPttUp"
                 @contextmenu.prevent
-                :disabled="!isSpeechSupported"
+                :disabled="!isSpeechSupported || isProcessingStt"
                 type="button"
                 class="relative flex items-center justify-center w-14 h-14 rounded-full transition-all active:scale-95 shadow-lg cursor-pointer touch-none"
                 :class="
@@ -204,7 +204,7 @@
                 </svg>
               </button>
               <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Говорите… отпустите, чтобы остановить' : 'Удерживайте микрофон и говорите (≥ 60%)' }}
+                {{ isProcessingStt ? (sttStatus || 'Распознаём…') : isListening ? 'Говорите… отпустите, чтобы остановить' : 'Удерживайте микрофон и говорите (≥ 60%)' }}
               </span>
             </div>
 
@@ -274,12 +274,12 @@
               @pointercancel.prevent="onPttUp"
               @lostpointercapture="onPttUp"
               @contextmenu.prevent
-              :disabled="!isSpeechSupported"
+              :disabled="!isSpeechSupported || isProcessingStt"
               type="button"
               class="px-4 py-2.5 rounded-2xl text-xs font-bold text-white cursor-pointer touch-none select-none"
               :class="isListening ? 'bg-rose-600' : 'bg-indigo-600 hover:bg-indigo-700'"
             >
-              {{ isListening ? 'Говорите… отпустите' : 'Удерживайте и произнесите' }}
+              {{ isProcessingStt ? (sttStatus || 'Распознаём…') : isListening ? 'Говорите… отпустите' : 'Удерживайте и произнесите' }}
             </button>
           </div>
 
@@ -474,7 +474,7 @@
                   Проверка ответа (th-TH)
                 </h4>
                 <p class="text-[11px] text-slate-500">
-                  Удерживайте микрофон и произнесите фразу, либо подтвердите знание:
+                  Удерживайте микрофон — запись идёт до отпускания (бесплатно на устройстве):
                 </p>
               </div>
             </div>
@@ -495,7 +495,7 @@
               @pointercancel.prevent="onPttUp"
               @lostpointercapture="onPttUp"
               @contextmenu.prevent
-              :disabled="!isSpeechSupported"
+              :disabled="!isSpeechSupported || isProcessingStt"
               class="relative flex items-center justify-center w-16 h-16 rounded-full transition-all active:scale-95 shadow-lg focus:outline-none cursor-pointer touch-none"
               :class="
                 isListening
@@ -518,7 +518,7 @@
             </button>
 
             <span class="text-xs font-bold mt-2 text-slate-700">
-              {{ isListening ? 'Говорите… отпустите кнопку, чтобы оценить' : 'Удерживайте микрофон и произнесите фразу' }}
+              {{ isProcessingStt ? (sttStatus || 'Распознаём на устройстве…') : isListening ? 'Говорите… отпустите кнопку, чтобы оценить' : 'Удерживайте микрофон и произнесите фразу' }}
             </span>
           </div>
 
@@ -783,6 +783,12 @@
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { useLearningStore } from '../useLearningStore.js';
 import { speechService } from '../speechService.js';
+import {
+  isLocalSttSupported,
+  getPreferredRecorderMime,
+  prefetchLocalStt,
+  transcribeThaiBlob
+} from '../localSttService.js';
 
 const store = useLearningStore();
 
@@ -808,26 +814,54 @@ const recallOk = ref(false);
 const RECALL_VOICE_MIN = 60;
 
 const isListening = ref(false);
-const isSpeechSupported = ref(speechService.isSpeechRecognitionSupported());
+const isProcessingStt = ref(false);
+const sttStatus = ref('');
+const isSpeechSupported = ref(isLocalSttSupported());
 const spokenThaiText = ref('');
 const pronunciationAnalysis = ref(null);
 const deconstructResult = ref(null);
 
-let recognitionHandle = null;
 let pendingFinalize = false;
 let stoppingListen = false;
 let hardMaxTimer = null;
 let didFinalizeThisListen = false;
 let pttHeld = false;
 let pttPointerId = null;
+let mediaStream = null;
+let mediaRecorder = null;
+let recordChunks = [];
 
-const MAX_LISTEN_MS = 18000;
+const MAX_LISTEN_MS = 20000;
+
+const micHint = computed(() => {
+  if (isProcessingStt.value) return sttStatus.value || 'Распознаём на устройстве…';
+  if (isListening.value) return 'Говорите… отпустите, когда закончите';
+  return 'Удерживайте микрофон и говорите (≥ 60%)';
+});
 
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
     clearTimeout(hardMaxTimer);
     hardMaxTimer = null;
   }
+}
+
+function tearDownMicTracks() {
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.ondataavailable = null;
+      mediaRecorder.onstop = null;
+      mediaRecorder.stop();
+    }
+  } catch (_) {}
+  mediaRecorder = null;
+  if (mediaStream) {
+    try {
+      mediaStream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+    mediaStream = null;
+  }
+  recordChunks = [];
 }
 
 function finalizePronunciation(finalText) {
@@ -845,6 +879,14 @@ function finalizePronunciation(finalText) {
   } catch (analysisErr) {
     console.warn('Pronunciation analysis error:', analysisErr);
   }
+}
+
+function warmLocalStt() {
+  prefetchLocalStt((ev) => {
+    if (ev?.status === 'progress' && ev.progress != null) {
+      sttStatus.value = `Загрузка модели ${Math.round(ev.progress)}%…`;
+    }
+  });
 }
 
 // Tags UI state
@@ -933,6 +975,7 @@ function handleLearn() {
 function handleAlreadyKnow() {
   isTestingPronunciation.value = true;
   isLearningExpanded.value = false;
+  warmLocalStt();
 }
 
 function handleRepeatInSession() {
@@ -979,6 +1022,7 @@ function openRecallCheck() {
   isRecallChecking.value = true;
   recallFeedback.value = '';
   recallOk.value = false;
+  warmLocalStt();
 }
 
 function closeRecallCheck() {
@@ -991,8 +1035,8 @@ function closePronunciationTest() {
   isTestingPronunciation.value = false;
 }
 
-function startThaiListening() {
-  if (!isSpeechSupported.value || isListening.value || stoppingListen) return;
+async function startThaiListening() {
+  if (!isSpeechSupported.value || isListening.value || stoppingListen || isProcessingStt.value) return;
 
   stoppingListen = false;
   isListening.value = true;
@@ -1000,41 +1044,46 @@ function startThaiListening() {
   pronunciationAnalysis.value = null;
   pendingFinalize = true;
   didFinalizeThisListen = false;
+  recordChunks = [];
   clearHardMaxTimer();
   hardMaxTimer = setTimeout(() => {
-    if (isListening.value) stopListening({ skipAnalyze: false });
+    if (pttHeld) onPttUp({ pointerId: pttPointerId });
   }, MAX_LISTEN_MS);
 
-  recognitionHandle = speechService.startThaiRecognition({
-    continuous: true,
-    keepAlive: true,
-    shouldContinue: () => pttHeld && !stoppingListen,
-    onResult: ({ text }) => {
-      if (text?.trim()) spokenThaiText.value = text;
-    },
-    onError: (err) => {
-      console.warn('Thai STT error:', err);
-    },
-    onEnd: (finalTranscript) => {
-      recognitionHandle = null;
-      const finalText = (finalTranscript || spokenThaiText.value || '').trim();
-      if (finalText) spokenThaiText.value = finalText;
-      // Keep UI "listening" only while finger is down; browser may have ended STT early
-      if (pttHeld && !stoppingListen) {
-        isListening.value = true;
-        return;
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        channelCount: 1
       }
-      isListening.value = false;
-      if (pendingFinalize && finalText) {
-        pendingFinalize = false;
-        finalizePronunciation(finalText);
-      }
-    }
-  });
+    });
+    const mime = getPreferredRecorderMime();
+    mediaRecorder = mime
+      ? new MediaRecorder(mediaStream, { mimeType: mime })
+      : new MediaRecorder(mediaStream);
+
+    mediaRecorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) recordChunks.push(ev.data);
+    };
+    mediaRecorder.start(200);
+  } catch (err) {
+    console.warn('Mic start failed:', err);
+    isListening.value = false;
+    pttHeld = false;
+    tearDownMicTracks();
+    pronunciationAnalysis.value = {
+      score: 0,
+      verdict: 'unclear',
+      feedbackTitle: 'Нет доступа к микрофону',
+      feedbackTip: 'Разрешите микрофон в браузере и попробуйте снова.',
+      syllableResults: []
+    };
+  }
 }
 
 function onPttDown(e) {
-  if (!isSpeechSupported.value || stoppingListen) return;
+  if (!isSpeechSupported.value || stoppingListen || isProcessingStt.value) return;
   if (pttHeld) return;
   pttHeld = true;
   pttPointerId = e.pointerId ?? null;
@@ -1048,63 +1097,124 @@ function onPttDown(e) {
 
 function onPttUp(e) {
   if (!pttHeld) return;
-  if (pttPointerId != null && e.pointerId != null && e.pointerId !== pttPointerId) return;
-  // Ignore spurious lostpointercapture while the finger is still down
+  if (pttPointerId != null && e?.pointerId != null && e.pointerId !== pttPointerId) return;
   if (e?.type === 'lostpointercapture' && e.buttons & 1) return;
   pttHeld = false;
   pttPointerId = null;
   try {
-    e.currentTarget?.releasePointerCapture?.(e.pointerId);
+    e?.currentTarget?.releasePointerCapture?.(e.pointerId);
   } catch (_) {}
   stopListening({ skipAnalyze: false });
 }
 
-function stopListening({ skipAnalyze = false } = {}) {
+async function stopListening({ skipAnalyze = false } = {}) {
   if (stoppingListen && !skipAnalyze) return;
   stoppingListen = true;
   clearHardMaxTimer();
-
-  const textSnapshot = (spokenThaiText.value || '').trim();
-  if (skipAnalyze) pendingFinalize = false;
-
-  if (recognitionHandle?.stop) {
-    recognitionHandle.stop();
-    recognitionHandle = null;
-  } else {
-    speechService.stopRecognition();
-  }
-  isListening.value = false;
   pttHeld = false;
   pttPointerId = null;
+  isListening.value = false;
 
   if (skipAnalyze) {
+    pendingFinalize = false;
+    tearDownMicTracks();
+    isProcessingStt.value = false;
+    sttStatus.value = '';
     stoppingListen = false;
     return;
   }
 
-  if (pendingFinalize && textSnapshot) {
-    pendingFinalize = false;
-    finalizePronunciation(textSnapshot);
+  const recorder = mediaRecorder;
+  const chunks = recordChunks;
+  const stream = mediaStream;
+  mediaRecorder = null;
+  mediaStream = null;
+  recordChunks = [];
+
+  let blob = null;
+  if (recorder && recorder.state !== 'inactive') {
+    blob = await new Promise((resolve) => {
+      const localChunks = chunks;
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) localChunks.push(ev.data);
+      };
+      recorder.onstop = () => {
+        resolve(new Blob(localChunks, { type: recorder.mimeType || 'audio/webm' }));
+      };
+      try {
+        recorder.stop();
+      } catch (_) {
+        resolve(new Blob(localChunks, { type: recorder.mimeType || 'audio/webm' }));
+      }
+    });
+  } else if (chunks.length) {
+    blob = new Blob(chunks, { type: 'audio/webm' });
   }
 
-  setTimeout(() => {
-    if (pendingFinalize) {
-      pendingFinalize = false;
-      const text = (spokenThaiText.value || textSnapshot || '').trim();
-      if (text) {
-        finalizePronunciation(text);
-      } else {
-        pronunciationAnalysis.value = {
-          score: 0,
-          verdict: 'unclear',
-          feedbackTitle: 'Речь не распознана',
-          feedbackTip: 'Удерживайте микрофон и говорите громче.',
-          syllableResults: []
-        };
-      }
-    }
+  if (stream) {
+    try {
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+  }
+
+  if (!pendingFinalize) {
     stoppingListen = false;
-  }, 450);
+    return;
+  }
+
+  if (!blob || blob.size < 400) {
+    pendingFinalize = false;
+    pronunciationAnalysis.value = {
+      score: 0,
+      verdict: 'unclear',
+      feedbackTitle: 'Речь не распознана',
+      feedbackTip: 'Удерживайте микрофон дольше и говорите громче.',
+      syllableResults: []
+    };
+    stoppingListen = false;
+    return;
+  }
+
+  isProcessingStt.value = true;
+  sttStatus.value = 'Распознаём на устройстве (бесплатно)…';
+  try {
+    const text = await transcribeThaiBlob(blob, {
+      onProgress: (ev) => {
+        if (ev?.status === 'progress' && ev.progress != null) {
+          sttStatus.value = `Загрузка модели ${Math.round(ev.progress)}%…`;
+        } else if (ev?.status === 'ready') {
+          sttStatus.value = 'Распознаём…';
+        }
+      }
+    });
+    pendingFinalize = false;
+    if (text) {
+      spokenThaiText.value = text;
+      finalizePronunciation(text);
+    } else {
+      pronunciationAnalysis.value = {
+        score: 0,
+        verdict: 'unclear',
+        feedbackTitle: 'Речь не распознана',
+        feedbackTip: 'Попробуйте ещё раз ближе к микрофону.',
+        syllableResults: []
+      };
+    }
+  } catch (err) {
+    console.warn('Local STT failed:', err);
+    pendingFinalize = false;
+    pronunciationAnalysis.value = {
+      score: 0,
+      verdict: 'unclear',
+      feedbackTitle: 'Не удалось распознать',
+      feedbackTip: String(err?.message || 'Повторите попытку или введите ответ текстом.'),
+      syllableResults: []
+    };
+  } finally {
+    isProcessingStt.value = false;
+    sttStatus.value = '';
+    stoppingListen = false;
+  }
 }
 
 async function creditRecallWithoutSpeech() {

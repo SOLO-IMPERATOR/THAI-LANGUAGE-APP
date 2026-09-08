@@ -124,6 +124,34 @@ export default defineConfig(() => {
                 },
               },
             },
+            {
+              urlPattern: /^https:\/\/huggingface\.co\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'hf-models-cache',
+                expiration: {
+                  maxEntries: 40,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/@huggingface\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'hf-runtime-cache',
+                expiration: {
+                  maxEntries: 20,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
           ],
         },
         devOptions: {
@@ -135,6 +163,9 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
+    },
+    optimizeDeps: {
+      exclude: ['@huggingface/transformers'],
     },
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
