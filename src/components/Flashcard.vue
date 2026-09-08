@@ -852,14 +852,48 @@ let vadRaf = null;
 let speechHeard = false;
 let silenceStartedAt = 0;
 let stoppingListen = false;
+let sttSilenceTimer = null;
+let hardMaxTimer = null;
 
 const SILENCE_STOP_MS = 1400;
 const MIN_UTTERANCE_MS = 900;
 const MAX_LISTEN_MS = 18000;
 const RMS_SPEECH = 0.035;
 const RMS_SILENCE = 0.022;
+const STT_SILENCE_MS = 1600;
+
+function clearSttSilenceTimer() {
+  if (sttSilenceTimer) {
+    clearTimeout(sttSilenceTimer);
+    sttSilenceTimer = null;
+  }
+}
+
+function clearHardMaxTimer() {
+  if (hardMaxTimer) {
+    clearTimeout(hardMaxTimer);
+    hardMaxTimer = null;
+  }
+}
+
+function scheduleSttSilenceStop() {
+  clearSttSilenceTimer();
+  sttSilenceTimer = setTimeout(() => {
+    sttSilenceTimer = null;
+    if (!isListening.value || stoppingListen) return;
+    if (!(spokenThaiText.value || '').trim()) return;
+    const spokenFor = Date.now() - (firstSpeechAt || Date.now());
+    if (spokenFor < MIN_UTTERANCE_MS) {
+      scheduleSttSilenceStop();
+      return;
+    }
+    stopListening({ skipAnalyze: false });
+  }, STT_SILENCE_MS);
+}
 
 function stopVad() {
+  clearSttSilenceTimer();
+  clearHardMaxTimer();
   if (vadRaf) {
     cancelAnimationFrame(vadRaf);
     vadRaf = null;
@@ -1224,46 +1258,45 @@ async function startThaiListening() {
   pendingFinalize = true;
   firstSpeechAt = 0;
   listenStartedAt = Date.now();
-
-  // Mic stream + volume-based auto-stop + local recording
-  await startMediaCapture();
+  clearSttSilenceTimer();
+  clearHardMaxTimer();
+  hardMaxTimer = setTimeout(() => {
+    if (isListening.value) stopListening({ skipAnalyze: false });
+  }, MAX_LISTEN_MS);
 
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
     onResult: ({ text }) => {
-      if (text?.trim()) spokenThaiText.value = text;
+      if (text?.trim()) {
+        spokenThaiText.value = text;
+        if (!firstSpeechAt) firstSpeechAt = Date.now();
+        scheduleSttSilenceStop();
+      }
     },
     onError: (err) => {
       console.warn('Thai STT error:', err);
-      if (pendingFinalize && spokenThaiText.value.trim()) {
-        pendingFinalize = false;
-        finalizePronunciation(spokenThaiText.value);
-      }
     },
     onEnd: (finalTranscript) => {
       recognitionHandle = null;
-      if (!isListening.value && !pendingFinalize) return;
-      isListening.value = false;
-      stopVad();
-      try {
-        if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-      } catch (_) {}
-      if (mediaStream) {
-        try {
-          mediaStream.getTracks().forEach((t) => t.stop());
-        } catch (_) {}
-        mediaStream = null;
-      }
-      if (!pendingFinalize) return;
-      pendingFinalize = false;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
-      if (finalText) {
-        spokenThaiText.value = finalText;
+      if (finalText) spokenThaiText.value = finalText;
+      if (pendingFinalize && finalText) {
+        pendingFinalize = false;
         finalizePronunciation(finalText);
       }
+      isListening.value = false;
       stoppingListen = false;
     }
   });
+
+  // Parallel MediaRecorder steals the mic on many phones — only on desktop
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+  if (!isMobile) {
+    setTimeout(() => {
+      if (!isListening.value) return;
+      startMediaCapture().catch(() => {});
+    }, 600);
+  }
 }
 
 function stopListening({ skipAnalyze = false } = {}) {
@@ -1271,12 +1304,17 @@ function stopListening({ skipAnalyze = false } = {}) {
   stoppingListen = true;
   stopVad();
 
-  if (skipAnalyze) pendingFinalize = false;
+  // Snapshot text BEFORE tearing down mic / recognition
+  const textSnapshot = (spokenThaiText.value || '').trim();
+
+  if (skipAnalyze) {
+    pendingFinalize = false;
+  }
 
   if (recognitionHandle?.stop) {
     recognitionHandle.stop();
     recognitionHandle = null;
-  } else if (isListening.value) {
+  } else {
     speechService.stopRecognition();
   }
   isListening.value = false;
@@ -1284,12 +1322,15 @@ function stopListening({ skipAnalyze = false } = {}) {
   try {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   } catch (_) {}
-  if (mediaStream) {
-    try {
-      mediaStream.getTracks().forEach((t) => t.stop());
-    } catch (_) {}
-    mediaStream = null;
-  }
+  // Delay killing tracks so recognition can flush final results
+  setTimeout(() => {
+    if (mediaStream) {
+      try {
+        mediaStream.getTracks().forEach((t) => t.stop());
+      } catch (_) {}
+      mediaStream = null;
+    }
+  }, 500);
 
   if (skipAnalyze) {
     stopMediaCapture();
@@ -1297,14 +1338,31 @@ function stopListening({ skipAnalyze = false } = {}) {
     return;
   }
 
+  // Score immediately from what we already have (don't wait for flaky onEnd)
+  if (pendingFinalize && textSnapshot) {
+    pendingFinalize = false;
+    finalizePronunciation(textSnapshot);
+  }
+
+  // Late flush if onEnd adds more text
   setTimeout(() => {
     if (pendingFinalize) {
       pendingFinalize = false;
-      const text = (spokenThaiText.value || '').trim();
-      if (text) finalizePronunciation(text);
+      const text = (spokenThaiText.value || textSnapshot || '').trim();
+      if (text) {
+        finalizePronunciation(text);
+      } else {
+        pronunciationAnalysis.value = {
+          score: 0,
+          verdict: 'unclear',
+          feedbackTitle: 'Речь не распознана',
+          feedbackTip: 'Нажмите микрофон ещё раз и говорите громче до паузы.',
+          syllableResults: []
+        };
+      }
     }
     stoppingListen = false;
-  }, 350);
+  }, 450);
 }
 
 function toggleThaiListening() {
