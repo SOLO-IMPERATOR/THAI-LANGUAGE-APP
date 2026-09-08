@@ -788,11 +788,10 @@ const availableTagsToSuggest = computed(() => {
 });
 
 watch(
-  () => phrase.value?.id,
+  () => [phrase.value?.id, store.sessionQueue[store.currentSessionIndex]?.awaitingRecall],
   () => {
     isLearningExpanded.value = false;
     isTestingPronunciation.value = false;
-    cardPhase.value = 'practice';
     isRecallChecking.value = false;
     recallInput.value = '';
     recallFeedback.value = '';
@@ -802,6 +801,7 @@ watch(
     deconstructResult.value = null;
     showTagInput.value = false;
     stopListening();
+    cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
   }
 );
 
@@ -904,7 +904,9 @@ function enterRecallPhase() {
   recallOk.value = false;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
-  cardPhase.value = 'recall';
+  // Put at end of queue — do NOT open recall immediately
+  store.queueForRecall();
+  cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
 }
 
 function openRecallCheck() {

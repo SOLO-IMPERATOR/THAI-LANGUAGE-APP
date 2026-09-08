@@ -568,6 +568,27 @@ export const useLearningStore = defineStore('learning', {
     },
 
     /**
+     * After practice check/learn: mark for recall and put at end of queue.
+     * Recall must not open immediately — only when the card comes up again.
+     */
+    queueForRecall() {
+      const idx = this.currentSessionIndex;
+      const current = this.sessionQueue[idx];
+      if (!current) return;
+
+      const item = { ...current, awaitingRecall: true };
+      this.sessionQueue.splice(idx, 1);
+      this.sessionQueue.push(item);
+      // Index stays: next phrase (if any) is now at idx.
+      // If this was the only card, it remains at idx with awaitingRecall.
+    },
+
+    isCurrentAwaitingRecall() {
+      const item = this.sessionQueue[this.currentSessionIndex];
+      return !!item?.awaitingRecall;
+    },
+
+    /**
      * Handle Successful Verification:
      * - Increments review_count
      * - Advance SRS stage
@@ -626,7 +647,9 @@ export const useLearningStore = defineStore('learning', {
 
       // Update queue item
       if (this.sessionQueue[this.currentSessionIndex]) {
-        Object.assign(this.sessionQueue[this.currentSessionIndex], updatedData);
+        Object.assign(this.sessionQueue[this.currentSessionIndex], updatedData, {
+          awaitingRecall: false
+        });
       }
 
       // Stats
@@ -652,7 +675,7 @@ export const useLearningStore = defineStore('learning', {
         console.warn('Score award warning:', scoreErr);
       }
 
-      // Advance queue pointer
+      // Advance queue pointer — phrase leaves the active session path
       this.currentSessionIndex += 1;
 
       return {
@@ -665,15 +688,20 @@ export const useLearningStore = defineStore('learning', {
     },
 
     /**
-     * Repeat phrase later in the current session
+     * Repeat phrase later in the current session (practice again, clear recall flag)
      */
     repeatInSession() {
-      if (this.sessionQueue.length <= 1) return;
+      if (this.sessionQueue.length <= 1) {
+        const only = this.sessionQueue[this.currentSessionIndex];
+        if (only) only.awaitingRecall = false;
+        return;
+      }
       const current = this.sessionQueue[this.currentSessionIndex];
       if (!current) return;
 
+      const item = { ...current, awaitingRecall: false };
       this.sessionQueue.splice(this.currentSessionIndex, 1);
-      this.sessionQueue.push(current);
+      this.sessionQueue.push(item);
     },
 
     /**
