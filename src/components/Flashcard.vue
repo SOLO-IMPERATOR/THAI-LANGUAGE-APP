@@ -854,6 +854,7 @@ let silenceStartedAt = 0;
 let stoppingListen = false;
 let sttSilenceTimer = null;
 let hardMaxTimer = null;
+let mediaCapturePromise = null;
 
 const SILENCE_STOP_MS = 1400;
 const MIN_UTTERANCE_MS = 900;
@@ -997,6 +998,7 @@ function stopMediaCapture() {
     }
   } catch (_) {}
   mediaRecorder = null;
+  mediaCapturePromise = null;
   if (mediaStream) {
     try {
       mediaStream.getTracks().forEach((t) => t.stop());
@@ -1006,54 +1008,70 @@ function stopMediaCapture() {
 }
 
 async function startMediaCapture() {
+  if (mediaRecorder || mediaCapturePromise) return mediaCapturePromise;
   clearUserRecording();
   mediaChunks = [];
   if (!navigator.mediaDevices?.getUserMedia) {
     return null;
   }
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
-    });
-    startVad(mediaStream);
-
-    if (typeof MediaRecorder !== 'undefined') {
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/mp4')
-          ? 'audio/mp4'
-          : '';
-      mediaRecorder = mime
-        ? new MediaRecorder(mediaStream, { mimeType: mime })
-        : new MediaRecorder(mediaStream);
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) mediaChunks.push(e.data);
-      };
-      mediaRecorder.onstop = () => {
-        if (mediaChunks.length) {
-          const blob = new Blob(mediaChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
-          const url = URL.createObjectURL(blob);
-          if (userRecordingUrl.value) {
-            try {
-              URL.revokeObjectURL(userRecordingUrl.value);
-            } catch (_) {}
-          }
-          userRecordingUrl.value = url;
+  mediaCapturePromise = (async () => {
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
         }
-        mediaChunks = [];
-      };
-      mediaRecorder.start(200);
+      });
+      startVad(mediaStream);
+
+      if (typeof MediaRecorder !== 'undefined') {
+        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/mp4')
+            ? 'audio/mp4'
+            : MediaRecorder.isTypeSupported('audio/ogg')
+              ? 'audio/ogg'
+              : '';
+        mediaRecorder = mime
+          ? new MediaRecorder(mediaStream, { mimeType: mime })
+          : new MediaRecorder(mediaStream);
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) mediaChunks.push(e.data);
+        };
+        mediaRecorder.onstop = () => {
+          if (mediaChunks.length) {
+            const blob = new Blob(mediaChunks, {
+              type: mediaRecorder?.mimeType || mediaChunks[0]?.type || 'audio/webm'
+            });
+            if (blob.size > 0) {
+              if (userRecordingUrl.value) {
+                try {
+                  URL.revokeObjectURL(userRecordingUrl.value);
+                } catch (_) {}
+              }
+              userRecordingUrl.value = URL.createObjectURL(blob);
+            }
+          }
+          mediaChunks = [];
+        };
+        mediaRecorder.start(250);
+      }
+      return mediaStream;
+    } catch (err) {
+      console.warn('Media capture unavailable:', err);
+      mediaRecorder = null;
+      return null;
+    } finally {
+      mediaCapturePromise = null;
     }
-    return mediaStream;
-  } catch (err) {
-    console.warn('Media capture unavailable:', err);
-    mediaRecorder = null;
-    return null;
-  }
+  })();
+  return mediaCapturePromise;
+}
+
+function ensureMediaCapture() {
+  if (!isListening.value) return;
+  startMediaCapture().catch(() => {});
 }
 
 function playUserRecording() {
@@ -1258,6 +1276,13 @@ async function startThaiListening() {
   pendingFinalize = true;
   firstSpeechAt = 0;
   listenStartedAt = Date.now();
+  clearUserRecording();
+  if (mediaRecorder || mediaStream) {
+    try {
+      stopMediaCapture();
+    } catch (_) {}
+  }
+  mediaCapturePromise = null;
   clearSttSilenceTimer();
   clearHardMaxTimer();
   hardMaxTimer = setTimeout(() => {
@@ -1271,6 +1296,8 @@ async function startThaiListening() {
         spokenThaiText.value = text;
         if (!firstSpeechAt) firstSpeechAt = Date.now();
         scheduleSttSilenceStop();
+        // Start local recording once STT is clearly working
+        ensureMediaCapture();
       }
     },
     onError: (err) => {
@@ -1289,14 +1316,10 @@ async function startThaiListening() {
     }
   });
 
-  // Parallel MediaRecorder steals the mic on many phones — only on desktop
-  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
-  if (!isMobile) {
-    setTimeout(() => {
-      if (!isListening.value) return;
-      startMediaCapture().catch(() => {});
-    }, 600);
-  }
+  // Always try to capture own voice (desktop + mobile) after STT warms up
+  setTimeout(() => {
+    if (isListening.value) ensureMediaCapture();
+  }, 800);
 }
 
 function stopListening({ skipAnalyze = false } = {}) {
