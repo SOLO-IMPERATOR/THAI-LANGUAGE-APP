@@ -319,27 +319,30 @@ class SpeechService {
   }
 
   /**
-   * Start Thai speech recognition (STT) in 'th-TH'
-   * Allows the user to pronounce the Thai phrase orally into microphone
+   * Start Thai speech recognition (STT) in 'th-TH'.
+   * Uses continuous mode so short pauses mid-phrase do not end early.
+   * Call stop() when the user is done — scoring should happen only then.
    */
-  startThaiRecognition({ onResult, onError, onEnd }) {
+  startThaiRecognition({ onResult, onError, onEnd, continuous = true } = {}) {
     if (!this.isSpeechRecognitionSupported()) {
       const err = new Error('Распознавание речи не поддерживается браузером. Рекомендуется Chrome или Safari.');
       if (onError) onError(err);
       return null;
     }
 
-    this.stopRecognition();
+    this.stopRecognition({ silent: true });
 
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     const recognition = new SpeechRec();
 
     recognition.lang = 'th-TH';
     recognition.interimResults = true;
-    recognition.continuous = false;
+    recognition.continuous = !!continuous;
     recognition.maxAlternatives = 5;
 
     let finalTranscript = '';
+    let endedIntentionally = false;
+    this._recognitionWantOpen = true;
 
     recognition.onstart = () => {
       this.isListening = true;
@@ -360,20 +363,40 @@ class SpeechService {
         onResult({
           final: finalTranscript.trim(),
           interim: interim.trim(),
-          text: (finalTranscript + ' ' + interim).trim()
+          text: (finalTranscript + ' ' + interim).trim(),
+          isFinalSegment: !interim,
+          complete: false
         });
       }
     };
 
     recognition.onerror = (event) => {
+      const errName = event?.error || '';
+      // Benign: no-speech / aborted while still wanting to listen
+      if (this._recognitionWantOpen && (errName === 'no-speech' || errName === 'aborted')) {
+        return;
+      }
       this.isListening = false;
       this.activeRecognition = null;
+      this._recognitionWantOpen = false;
       if (onError) onError(event);
     };
 
     recognition.onend = () => {
-      this.isListening = false;
       this.activeRecognition = null;
+      // Browser often ends mid-phrase; restart until caller stops intentionally
+      if (this._recognitionWantOpen && continuous && !endedIntentionally) {
+        try {
+          recognition.start();
+          this.activeRecognition = recognition;
+          return;
+        } catch (_) {
+          // fall through to finish
+        }
+      }
+
+      this.isListening = false;
+      this._recognitionWantOpen = false;
       if (onEnd) onEnd(finalTranscript.trim());
     };
 
@@ -383,35 +406,43 @@ class SpeechService {
     } catch (e) {
       this.isListening = false;
       this.activeRecognition = null;
+      this._recognitionWantOpen = false;
       if (onError) onError(e);
       return null;
     }
 
     return {
-      stop: () => this.stopRecognition(),
+      stop: () => {
+        endedIntentionally = true;
+        this._recognitionWantOpen = false;
+        this.stopRecognition();
+      },
       abort: () => {
-        if (this.activeRecognition) {
-          try {
-            this.activeRecognition.abort();
-          } catch {
-            // Ignore
-          }
-          this.activeRecognition = null;
-          this.isListening = false;
-        }
+        endedIntentionally = true;
+        this._recognitionWantOpen = false;
+        this.stopRecognition({ silent: true });
       }
     };
   }
 
-  stopRecognition() {
-    if (this.activeRecognition) {
+  stopRecognition({ silent = false } = {}) {
+    this._recognitionWantOpen = false;
+    const rec = this.activeRecognition;
+    if (rec) {
       try {
-        this.activeRecognition.onend = null;
-        this.activeRecognition.onerror = null;
-        this.activeRecognition.onresult = null;
-        this.activeRecognition.abort();
+        // Prefer stop() so final results + onend still fire (abort drops them)
+        if (!silent && typeof rec.stop === 'function') {
+          rec.stop();
+        } else {
+          rec.onend = null;
+          rec.onerror = null;
+          rec.onresult = null;
+          rec.abort();
+        }
       } catch {
-        // Ignore
+        try {
+          rec.abort();
+        } catch (_) {}
       }
       this.activeRecognition = null;
     }
@@ -513,10 +544,11 @@ class SpeechService {
   }
 
   /**
-   * Analyze Thai pronunciation in real-time
-   * Compares spoken text against target phrase and its word/syllable breakdown
+   * Analyze Thai pronunciation.
+   * @param {{ playCue?: boolean }} options - set playCue:false to skip chimes (e.g. live preview)
    */
-  analyzeThaiPronunciation(spokenText, phrase) {
+  analyzeThaiPronunciation(spokenText, phrase, options = {}) {
+    const playCue = options.playCue !== false;
     if (!spokenText || !phrase) {
       return {
         score: 0,
@@ -628,17 +660,17 @@ class SpeechService {
       verdict = 'excellent';
       feedbackTitle = 'Великолепное произношение! 🎯';
       feedbackTip = 'Тайский носитель понял бы вас моментально. Тон и гласные выдержаны точно.';
-      this.playAuditoryCue('success');
+      if (playCue) this.playAuditoryCue('success');
     } else if (overallScore >= 60) {
       verdict = 'good';
       feedbackTitle = 'Хорошо, смысл понятен! 👍';
       feedbackTip = 'Вас поймут, но обратите внимание на долготу гласных и конечные согласные звуки.';
-      this.playAuditoryCue('success');
+      if (playCue) this.playAuditoryCue('success');
     } else {
       verdict = 'needs_practice';
       feedbackTitle = 'Требуется тренировка 🔊';
       feedbackTip = 'Послушайте эталонное звучание тайского диктора еще раз и повторите фразу плавно без пауз.';
-      this.playAuditoryCue('retry');
+      if (playCue) this.playAuditoryCue('retry');
     }
 
     return {

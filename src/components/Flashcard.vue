@@ -200,7 +200,7 @@
                 </svg>
               </button>
               <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Слушаю… говорите на тайском' : 'или произнесите фразу (≥ 60%)' }}
+                {{ isListening ? 'Слушаю… договорите и нажмите микрофон снова' : 'или произнесите фразу целиком (≥ 60%)' }}
               </span>
             </div>
 
@@ -210,6 +210,16 @@
               <div v-if="pronunciationAnalysis" class="text-xs mt-1 font-bold" :class="pronunciationAnalysis.score >= 60 ? 'text-emerald-700' : 'text-amber-700'">
                 {{ pronunciationAnalysis.score }}%
               </div>
+            </div>
+
+            <div v-if="userRecordingUrl" class="flex justify-center">
+              <button
+                @click="playUserRecording"
+                type="button"
+                class="px-4 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold cursor-pointer"
+              >
+                {{ isPlayingUserRec ? '⏸ Моя запись' : '🎤 Послушать мою запись' }}
+              </button>
             </div>
 
             <p v-if="recallFeedback" class="text-xs font-bold text-center" :class="recallOk ? 'text-emerald-700' : 'text-rose-600'">
@@ -506,7 +516,7 @@
             </button>
 
             <span class="text-xs font-bold mt-2 text-slate-700">
-              {{ isListening ? 'Слушаю вас... Говорите на тайском' : 'Нажмите на значок микрофона и произнесите ответ' }}
+              {{ isListening ? 'Слушаю… договорите фразу и нажмите микрофон ещё раз' : 'Нажмите микрофон, произнесите фразу целиком, затем остановите' }}
             </span>
           </div>
 
@@ -520,14 +530,22 @@
             </div>
           </div>
 
-          <!-- Listen reference audio button -->
-          <div class="pt-2 border-t border-slate-200 flex items-center justify-center">
+          <!-- Listen reference + own recording -->
+          <div class="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-center gap-2">
             <button
               @click="playAudio()"
               type="button"
-              class="w-full sm:w-auto px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+              class="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <span>🔊 Послушать эталон ({{ currentSpeed }}×)</span>
+            </button>
+            <button
+              v-if="userRecordingUrl"
+              @click="playUserRecording"
+              type="button"
+              class="px-4 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <span>{{ isPlayingUserRec ? '⏸ Моя запись' : '🎤 Моя запись' }}</span>
             </button>
           </div>
 
@@ -596,14 +614,23 @@
 
             <!-- Action Buttons: Compare with Native Audio & Accept -->
             <div class="flex flex-wrap items-center justify-between gap-2 pt-4 border-t border-current/10 mt-3">
-              <button
-                @click="playAudio()"
-                type="button"
-                class="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center gap-1.5 shadow-xs transition"
-              >
-                <span>🔊 Послушать эталон ({{ currentSpeed }}×)</span>
-              </button>
-
+              <div class="flex flex-wrap gap-2">
+                <button
+                  @click="playAudio()"
+                  type="button"
+                  class="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+                >
+                  <span>🔊 Эталон ({{ currentSpeed }}×)</span>
+                </button>
+                <button
+                  v-if="userRecordingUrl"
+                  @click="playUserRecording"
+                  type="button"
+                  class="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+                >
+                  <span>{{ isPlayingUserRec ? '⏸' : '🎤' }} Моя запись</span>
+                </button>
+              </div>
 
               <button
                 @click="enterRecallPhase"
@@ -776,6 +803,125 @@ const isSpeechSupported = ref(speechService.isSpeechRecognitionSupported());
 const spokenThaiText = ref('');
 const pronunciationAnalysis = ref(null);
 const deconstructResult = ref(null);
+const userRecordingUrl = ref(null);
+const isPlayingUserRec = ref(false);
+
+let mediaRecorder = null;
+let mediaStream = null;
+let mediaChunks = [];
+let userRecAudio = null;
+let recognitionHandle = null;
+let pendingFinalize = false;
+
+function clearUserRecording() {
+  if (userRecAudio) {
+    try {
+      userRecAudio.pause();
+      userRecAudio.src = '';
+    } catch (_) {}
+    userRecAudio = null;
+  }
+  isPlayingUserRec.value = false;
+  if (userRecordingUrl.value) {
+    try {
+      URL.revokeObjectURL(userRecordingUrl.value);
+    } catch (_) {}
+    userRecordingUrl.value = null;
+  }
+}
+
+function stopMediaCapture() {
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+  } catch (_) {}
+  mediaRecorder = null;
+  if (mediaStream) {
+    try {
+      mediaStream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+    mediaStream = null;
+  }
+}
+
+async function startMediaCapture() {
+  clearUserRecording();
+  mediaChunks = [];
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    return;
+  }
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : '';
+    mediaRecorder = mime ? new MediaRecorder(mediaStream, { mimeType: mime }) : new MediaRecorder(mediaStream);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) mediaChunks.push(e.data);
+    };
+    mediaRecorder.onstop = () => {
+      if (!mediaChunks.length) return;
+      const blob = new Blob(mediaChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
+      clearUserRecording();
+      userRecordingUrl.value = URL.createObjectURL(blob);
+      mediaChunks = [];
+      if (mediaStream) {
+        try {
+          mediaStream.getTracks().forEach((t) => t.stop());
+        } catch (_) {}
+        mediaStream = null;
+      }
+    };
+    mediaRecorder.start(200);
+  } catch (err) {
+    console.warn('MediaRecorder unavailable:', err);
+    mediaRecorder = null;
+  }
+}
+
+function playUserRecording() {
+  if (!userRecordingUrl.value) return;
+  if (userRecAudio && !userRecAudio.paused) {
+    userRecAudio.pause();
+    isPlayingUserRec.value = false;
+    return;
+  }
+  speechService.stopSpeaking();
+  if (userRecAudio) {
+    try {
+      userRecAudio.pause();
+    } catch (_) {}
+  }
+  userRecAudio = new Audio(userRecordingUrl.value);
+  isPlayingUserRec.value = true;
+  userRecAudio.onended = () => {
+    isPlayingUserRec.value = false;
+  };
+  userRecAudio.onerror = () => {
+    isPlayingUserRec.value = false;
+  };
+  userRecAudio.play().catch(() => {
+    isPlayingUserRec.value = false;
+  });
+}
+
+function finalizePronunciation(finalText) {
+  if (!phrase.value || !finalText) return;
+  try {
+    pronunciationAnalysis.value = speechService.analyzeThaiPronunciation(finalText, phrase.value, {
+      playCue: true
+    });
+    if (cardPhase.value === 'recall' && pronunciationAnalysis.value?.score >= RECALL_VOICE_MIN) {
+      recallFeedback.value = `Похоже верно (${pronunciationAnalysis.value.score}%) — можно нажать «Проверить ответ»`;
+      recallOk.value = true;
+    }
+  } catch (analysisErr) {
+    console.warn('Pronunciation analysis error:', analysisErr);
+  }
+}
 
 // Tags UI state
 const showTagInput = ref(false);
@@ -800,14 +946,17 @@ watch(
     pronunciationAnalysis.value = null;
     deconstructResult.value = null;
     showTagInput.value = false;
-    stopListening();
+    stopListening({ skipAnalyze: true });
+    clearUserRecording();
     cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
   }
 );
 
 onUnmounted(() => {
   speechService.stopSpeaking();
-  stopListening();
+  stopListening({ skipAnalyze: true });
+  clearUserRecording();
+  stopMediaCapture();
 });
 
 const speedOptions = [0.5, 0.7, 1.0, 1.2];
@@ -925,59 +1074,73 @@ function closePronunciationTest() {
   isTestingPronunciation.value = false;
 }
 
-function startThaiListening() {
+async function startThaiListening() {
   if (!isSpeechSupported.value || isListening.value) return;
 
   isListening.value = true;
   spokenThaiText.value = '';
+  pronunciationAnalysis.value = null;
+  pendingFinalize = true;
+  await startMediaCapture();
 
-  speechService.startThaiRecognition({
-    onResult: ({ interim, final, text }) => {
+  recognitionHandle = speechService.startThaiRecognition({
+    continuous: true,
+    onResult: ({ text }) => {
+      // Live transcript only — no scoring while still speaking
       spokenThaiText.value = text;
-      if (phrase.value && (final || interim)) {
-        try {
-          pronunciationAnalysis.value = speechService.analyzeThaiPronunciation(text, phrase.value);
-          if (cardPhase.value === 'recall' && pronunciationAnalysis.value?.score >= RECALL_VOICE_MIN) {
-            recallFeedback.value = `Похоже верно (${pronunciationAnalysis.value.score}%) — можно нажать «Проверить ответ»`;
-            recallOk.value = true;
-          }
-        } catch (analysisErr) {
-          console.warn('Pronunciation analysis error:', analysisErr);
-        }
-      }
     },
     onError: (err) => {
       console.warn('Thai STT error:', err);
       isListening.value = false;
+      stopMediaCapture();
     },
     onEnd: (finalTranscript) => {
       isListening.value = false;
+      recognitionHandle = null;
+      try {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+      } catch (_) {}
+      if (!pendingFinalize) return;
+      pendingFinalize = false;
       const finalText = finalTranscript || spokenThaiText.value;
-      if (phrase.value && finalText) {
-        try {
-          pronunciationAnalysis.value = speechService.analyzeThaiPronunciation(finalText, phrase.value);
-          if (cardPhase.value === 'recall' && pronunciationAnalysis.value?.score >= RECALL_VOICE_MIN) {
-            recallFeedback.value = `Похоже верно (${pronunciationAnalysis.value.score}%) — можно нажать «Проверить ответ»`;
-            recallOk.value = true;
-          }
-        } catch (analysisErr) {
-          console.warn('Pronunciation analysis error on end:', analysisErr);
-        }
-      }
+      finalizePronunciation(finalText);
     }
   });
 }
 
-function stopListening() {
-  if (isListening.value) {
+function stopListening({ skipAnalyze = false } = {}) {
+  if (skipAnalyze) pendingFinalize = false;
+
+  if (recognitionHandle?.stop) {
+    recognitionHandle.stop();
+    recognitionHandle = null;
+  } else if (isListening.value) {
     speechService.stopRecognition();
-    isListening.value = false;
   }
+  isListening.value = false;
+
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  } catch (_) {}
+
+  if (skipAnalyze) {
+    stopMediaCapture();
+    return;
+  }
+
+  // onEnd usually finalizes; fallback if recognition already closed
+  setTimeout(() => {
+    if (pendingFinalize) {
+      pendingFinalize = false;
+      finalizePronunciation(spokenThaiText.value);
+    }
+  }, 200);
 }
 
 function toggleThaiListening() {
   if (isListening.value) {
-    stopListening();
+    // User finished speaking — stop & score
+    stopListening({ skipAnalyze: false });
   } else {
     startThaiListening();
   }
