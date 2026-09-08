@@ -1007,6 +1007,8 @@ function startThaiListening() {
 
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
+    keepAlive: true,
+    shouldContinue: () => pttHeld && !stoppingListen,
     onResult: ({ text }) => {
       if (text?.trim()) spokenThaiText.value = text;
     },
@@ -1017,7 +1019,13 @@ function startThaiListening() {
       recognitionHandle = null;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
       if (finalText) spokenThaiText.value = finalText;
-      if (!pttHeld && pendingFinalize && finalText) {
+      // Keep UI "listening" only while finger is down; browser may have ended STT early
+      if (pttHeld && !stoppingListen) {
+        isListening.value = true;
+        return;
+      }
+      isListening.value = false;
+      if (pendingFinalize && finalText) {
         pendingFinalize = false;
         finalizePronunciation(finalText);
       }
@@ -1041,14 +1049,14 @@ function onPttDown(e) {
 function onPttUp(e) {
   if (!pttHeld) return;
   if (pttPointerId != null && e.pointerId != null && e.pointerId !== pttPointerId) return;
+  // Ignore spurious lostpointercapture while the finger is still down
+  if (e?.type === 'lostpointercapture' && e.buttons & 1) return;
   pttHeld = false;
   pttPointerId = null;
   try {
     e.currentTarget?.releasePointerCapture?.(e.pointerId);
   } catch (_) {}
-  if (isListening.value) {
-    stopListening({ skipAnalyze: false });
-  }
+  stopListening({ skipAnalyze: false });
 }
 
 function stopListening({ skipAnalyze = false } = {}) {

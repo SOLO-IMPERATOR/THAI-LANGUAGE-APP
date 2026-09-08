@@ -322,8 +322,19 @@ class SpeechService {
    * Start Thai speech recognition (STT) in 'th-TH'.
    * Uses continuous mode so short pauses mid-phrase do not end early.
    * Call stop() when the user is done — scoring should happen only then.
+   *
+   * keepAlive + shouldContinue: mobile browsers often kill recognition after ~1s
+   * of silence; while the caller still wants the mic (push-to-talk held), restart
+   * the same session so hold-to-talk actually lasts until release.
    */
-  startThaiRecognition({ onResult, onError, onEnd, continuous = true } = {}) {
+  startThaiRecognition({
+    onResult,
+    onError,
+    onEnd,
+    continuous = true,
+    keepAlive = false,
+    shouldContinue = null
+  } = {}) {
     if (!this.isSpeechRecognitionSupported()) {
       const err = new Error('Распознавание речи не поддерживается браузером. Рекомендуется Chrome или Safari.');
       if (onError) onError(err);
@@ -342,7 +353,21 @@ class SpeechService {
 
     let finalTranscript = '';
     let endedIntentionally = false;
+    let restartTimer = null;
     this._recognitionWantOpen = true;
+
+    const clearRestartTimer = () => {
+      if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+      }
+    };
+
+    const stillWantOpen = () =>
+      keepAlive &&
+      this._recognitionWantOpen &&
+      !endedIntentionally &&
+      (typeof shouldContinue !== 'function' || !!shouldContinue());
 
     recognition.onstart = () => {
       this.isListening = true;
@@ -372,21 +397,67 @@ class SpeechService {
 
     recognition.onerror = (event) => {
       const errName = event?.error || '';
-      // Let onend handle session close; don't thrash mic on benign errors
+      // no-speech / aborted: onend will keep-alive if PTT still held
       if (errName === 'no-speech' || errName === 'aborted') {
         return;
       }
-      this.isListening = false;
-      this.activeRecognition = null;
-      this._recognitionWantOpen = false;
+      // Fatal for this attempt — allow keep-alive restart via onend unless we close wantOpen
+      if (errName === 'not-allowed' || errName === 'service-not-allowed') {
+        this._recognitionWantOpen = false;
+        endedIntentionally = true;
+        clearRestartTimer();
+        this.isListening = false;
+        this.activeRecognition = null;
+        if (onError) onError(event);
+        return;
+      }
       if (onError) onError(event);
     };
 
     recognition.onend = () => {
       this.activeRecognition = null;
       this.isListening = false;
+
+      if (stillWantOpen()) {
+        clearRestartTimer();
+        // Restart quickly so hold-to-talk survives browser silence timeouts
+        restartTimer = setTimeout(() => {
+          restartTimer = null;
+          if (!stillWantOpen()) {
+            this._recognitionWantOpen = false;
+            if (onEnd) onEnd(finalTranscript.trim(), { intentional: endedIntentionally });
+            return;
+          }
+          try {
+            recognition.start();
+            this.activeRecognition = recognition;
+            this.isListening = true;
+          } catch (err) {
+            // Rare race: try once more shortly
+            restartTimer = setTimeout(() => {
+              restartTimer = null;
+              if (!stillWantOpen()) {
+                this._recognitionWantOpen = false;
+                if (onEnd) onEnd(finalTranscript.trim(), { intentional: endedIntentionally });
+                return;
+              }
+              try {
+                recognition.start();
+                this.activeRecognition = recognition;
+                this.isListening = true;
+              } catch (err2) {
+                this._recognitionWantOpen = false;
+                if (onError) onError(err2);
+                if (onEnd) onEnd(finalTranscript.trim(), { intentional: false });
+              }
+            }, 120);
+          }
+        }, 40);
+        return;
+      }
+
+      clearRestartTimer();
       this._recognitionWantOpen = false;
-      // Never auto-restart: each start() re-opens the mic and plays system sounds
       if (onEnd) onEnd(finalTranscript.trim(), { intentional: endedIntentionally });
     };
 
@@ -394,6 +465,7 @@ class SpeechService {
       recognition.start();
       this.activeRecognition = recognition;
     } catch (e) {
+      clearRestartTimer();
       this.isListening = false;
       this.activeRecognition = null;
       this._recognitionWantOpen = false;
@@ -405,11 +477,13 @@ class SpeechService {
       stop: () => {
         endedIntentionally = true;
         this._recognitionWantOpen = false;
+        clearRestartTimer();
         this.stopRecognition();
       },
       abort: () => {
         endedIntentionally = true;
         this._recognitionWantOpen = false;
+        clearRestartTimer();
         this.stopRecognition({ silent: true });
       }
     };
