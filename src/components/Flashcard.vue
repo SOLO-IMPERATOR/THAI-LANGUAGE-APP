@@ -202,7 +202,6 @@
                 @pointerdown.prevent="onPttDown"
                 @pointerup.prevent="onPttUp"
                 @pointercancel.prevent="onPttUp"
-                @lostpointercapture="onPttUp"
                 @contextmenu.prevent
                 type="button"
                 class="relative flex items-center justify-center w-14 h-14 rounded-full transition-all active:scale-95 shadow-lg cursor-pointer touch-none"
@@ -218,7 +217,7 @@
                 </svg>
               </button>
               <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Говорите… отпустите, чтобы остановить' : 'Удерживайте микрофон и говорите (≥ 60%)' }}
+                {{ isListening ? 'Говорите… отпустите, чтобы оценить' : 'Удерживайте и говорите сразу после звука микр.' }}
               </span>
             </div>
 
@@ -287,7 +286,6 @@
               @pointerdown.prevent="onPttDown"
               @pointerup.prevent="onPttUp"
               @pointercancel.prevent="onPttUp"
-              @lostpointercapture="onPttUp"
               @contextmenu.prevent
               type="button"
               class="px-4 py-2.5 rounded-2xl text-xs font-bold text-white cursor-pointer touch-none select-none"
@@ -530,7 +528,6 @@
               @pointerdown.prevent="onPttDown"
               @pointerup.prevent="onPttUp"
               @pointercancel.prevent="onPttUp"
-              @lostpointercapture="onPttUp"
               @contextmenu.prevent
               class="relative flex items-center justify-center w-16 h-16 rounded-full transition-all active:scale-95 shadow-lg focus:outline-none cursor-pointer touch-none"
               :class="
@@ -554,7 +551,7 @@
             </button>
 
             <span class="text-xs font-bold mt-2 text-slate-700">
-              {{ isListening ? 'Говорите… отпустите кнопку, чтобы оценить' : 'Удерживайте микрофон и произнесите фразу' }}
+              {{ isListening ? 'Говорите… отпустите кнопку' : 'Удерживайте и говорите сразу после звука микр.' }}
             </span>
           </div>
 
@@ -865,10 +862,10 @@ let hardMaxTimer = null;
 let didFinalizeThisListen = false;
 let pttHeld = false;
 let pttPointerId = null;
-let micCooldownUntil = 0;
+/** Prevents double-stop from pointerup + pointercancel on the same gesture */
+let pttSessionId = 0;
 
-const MAX_LISTEN_MS = 18000;
-const MIC_COOLDOWN_MS = 250;
+const MAX_LISTEN_MS = 15000;
 
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
@@ -1039,79 +1036,81 @@ function closePronunciationTest() {
 }
 
 function startThaiListening() {
-  if (!isSpeechSupported.value || stoppingListen) return;
+  if (!isSpeechSupported.value || stoppingListen || recognitionHandle) return;
 
-  const waitMs = Math.max(0, micCooldownUntil - Date.now());
   stoppingListen = false;
   isListening.value = true;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
   pendingFinalize = true;
   didFinalizeThisListen = false;
+  const sessionId = pttSessionId;
+
   clearHardMaxTimer();
   hardMaxTimer = setTimeout(() => {
-    if (pttHeld) stopListening({ skipAnalyze: false });
+    if (pttHeld && pttSessionId === sessionId) {
+      stopListening({ skipAnalyze: false });
+    }
   }, MAX_LISTEN_MS);
 
-  const begin = () => {
-    if (!pttHeld || stoppingListen) {
+  recognitionHandle = speechService.startThaiRecognition({
+    continuous: true,
+    onStart: () => {
+      if (pttSessionId !== sessionId || !pttHeld) return;
+      isListening.value = true;
+    },
+    onResult: ({ text }) => {
+      if (pttSessionId !== sessionId) return;
+      if (text?.trim()) spokenThaiText.value = text;
+    },
+    onError: (err) => {
+      console.warn('Thai STT error:', err);
+    },
+    onEnd: (finalTranscript, meta = {}) => {
+      if (pttSessionId !== sessionId) return;
+      recognitionHandle = null;
+      const finalText = (finalTranscript || spokenThaiText.value || '').trim();
+      if (finalText) spokenThaiText.value = finalText;
       isListening.value = false;
-      return;
-    }
-    recognitionHandle = speechService.startThaiRecognition({
-      continuous: true,
-      keepAlive: true,
-      shouldContinue: () => pttHeld && !stoppingListen,
-      onResult: ({ text }) => {
-        if (text?.trim()) spokenThaiText.value = text;
-      },
-      onError: (err) => {
-        console.warn('Thai STT error:', err);
-      },
-      onEnd: (finalTranscript, meta = {}) => {
-        recognitionHandle = null;
-        const finalText = (finalTranscript || spokenThaiText.value || '').trim();
-        if (finalText) spokenThaiText.value = finalText;
-        if (pttHeld && !stoppingListen && !meta?.intentional) {
-          isListening.value = true;
-          return;
-        }
-        isListening.value = false;
-        if (pendingFinalize && finalText) {
-          pendingFinalize = false;
-          finalizePronunciation(finalText);
-        }
-      }
-    });
-  };
 
-  if (waitMs > 0) {
-    setTimeout(begin, waitMs);
-  } else {
-    begin();
-  }
+      // Browser ended early while still held (common on Android) — do NOT restart
+      // (restart = mic beep loop). Keep transcript; user can release or hold again.
+      if (pttHeld && !meta?.intentional) {
+        if (pendingFinalize && finalText) {
+          // keep text visible; score on release
+        }
+        return;
+      }
+
+      if (pendingFinalize && finalText) {
+        pendingFinalize = false;
+        finalizePronunciation(finalText);
+      }
+    }
+  });
 }
 
 function onPttDown(e) {
   if (!isSpeechSupported.value || stoppingListen) return;
   if (pttHeld) return;
+  // Only primary button / touch
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+
   pttHeld = true;
   pttPointerId = e.pointerId ?? null;
-  try {
-    e.currentTarget?.setPointerCapture?.(e.pointerId);
-  } catch (_) {}
+  pttSessionId += 1;
   startThaiListening();
 }
 
 function onPttUp(e) {
   if (!pttHeld) return;
   if (pttPointerId != null && e?.pointerId != null && e.pointerId !== pttPointerId) return;
-  if (e?.type === 'lostpointercapture' && e.buttons & 1) return;
+  // Ignore lostpointercapture — on many mobile browsers it fires spuriously and
+  // stops recognition while the finger is still down (mic on→off "дергает").
+  if (e?.type === 'lostpointercapture') return;
+
   pttHeld = false;
   pttPointerId = null;
-  try {
-    e?.currentTarget?.releasePointerCapture?.(e.pointerId);
-  } catch (_) {}
   stopListening({ skipAnalyze: false });
 }
 
@@ -1127,18 +1126,15 @@ function stopListening({ skipAnalyze = false } = {}) {
   pttPointerId = null;
   isListening.value = false;
 
-  if (recognitionHandle?.stop) {
-    recognitionHandle.stop();
-    recognitionHandle = null;
+  const handle = recognitionHandle;
+  recognitionHandle = null;
+  if (handle?.stop) {
+    handle.stop();
   } else if (skipAnalyze) {
     speechService.abortRecognitionHard();
-    recognitionHandle = null;
   } else {
     speechService.stopRecognition();
-    recognitionHandle = null;
   }
-
-  micCooldownUntil = Date.now() + MIC_COOLDOWN_MS;
 
   if (skipAnalyze) {
     stoppingListen = false;
@@ -1161,13 +1157,13 @@ function stopListening({ skipAnalyze = false } = {}) {
           score: 0,
           verdict: 'unclear',
           feedbackTitle: 'Речь не распознана',
-          feedbackTip: 'Удерживайте микрофон и говорите громче.',
+          feedbackTip: 'Удерживайте микрофон и говорите сразу после звука включения.',
           syllableResults: []
         };
       }
     }
     stoppingListen = false;
-  }, 400);
+  }, 350);
 }
 
 async function creditRecallWithoutSpeech() {

@@ -323,203 +323,135 @@ class SpeechService {
   }
 
   /**
-   * Start Thai speech recognition (STT) in 'th-TH'.
-   * Always uses a fresh SpeechRecognition instance. keepAlive recreates (not reuses)
-   * the instance if the browser ends early while PTT is still held.
+   * Push-to-talk Thai STT (Web Speech API).
+   *
+   * Design rules (Chrome/Android realities):
+   * - NEVER auto-restart while held: each start()/stop() plays system mic sounds.
+   * - One SpeechRecognition instance per hold; stop() only on intentional release.
+   * - continuous=true helps desktop; Android may still end on silence — user re-holds.
+   * - Prefer stop() over abort() so interim/final results can flush.
    */
-  startThaiRecognition({
-    onResult,
-    onError,
-    onEnd,
-    continuous = true,
-    keepAlive = false,
-    shouldContinue = null
-  } = {}) {
+  startThaiRecognition({ onResult, onError, onEnd, onStart, continuous = true } = {}) {
     if (!this.isSpeechRecognitionSupported()) {
       const err = new Error('Распознавание речи не поддерживается браузером. Рекомендуется Chrome или Safari.');
       if (onError) onError(err);
       return null;
     }
 
-    // Tear down any previous session without killing the generation we're about to use
-    this._clearSttRestartTimer();
-    this._detachAndAbort(this.activeRecognition);
-    this.activeRecognition = null;
-    this.isListening = false;
+    this.abortRecognitionHard();
 
-    this._sttGeneration += 1;
-    const generation = this._sttGeneration;
-    this._recognitionWantOpen = true;
-    this._sttRestartsThisHold = 0;
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRec();
+    recognition.lang = 'th-TH';
+    recognition.interimResults = true;
+    recognition.continuous = !!continuous;
+    recognition.maxAlternatives = 3;
 
     let finalTranscript = '';
     let lastHeard = '';
-    let endedIntentionally = false;
-    const MAX_RESTARTS_PER_HOLD = 5;
+    let intentionalStop = false;
+    let started = false;
+    let finished = false;
 
-    const stillWantOpen = () =>
-      keepAlive &&
-      this._recognitionWantOpen &&
-      !endedIntentionally &&
-      generation === this._sttGeneration &&
-      this._sttRestartsThisHold < MAX_RESTARTS_PER_HOLD &&
-      (typeof shouldContinue !== 'function' || !!shouldContinue());
-
-    const emitEnd = (intentional) => {
-      if (generation !== this._sttGeneration) return;
-      this._recognitionWantOpen = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
       this.isListening = false;
-      this.activeRecognition = null;
+      if (this.activeRecognition === recognition) this.activeRecognition = null;
       const text = (finalTranscript || lastHeard || '').trim();
-      if (onEnd) onEnd(text, { intentional: !!intentional });
+      if (onEnd) onEnd(text, { intentional: intentionalStop, started });
     };
 
-    const bindAndStart = () => {
-      if (generation !== this._sttGeneration || !this._recognitionWantOpen || endedIntentionally) {
+    recognition.onstart = () => {
+      started = true;
+      this.isListening = true;
+      this.activeRecognition = recognition;
+      if (onStart) onStart();
+    };
+
+    recognition.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const item = event.results[i];
+        if (item.isFinal) finalTranscript += item[0].transcript;
+        else interim += item[0].transcript;
+      }
+      const text = (finalTranscript + ' ' + interim).trim();
+      lastHeard = text;
+      if (onResult) {
+        onResult({
+          final: finalTranscript.trim(),
+          interim: interim.trim(),
+          text,
+          isFinalSegment: !interim,
+          complete: false
+        });
+      }
+    };
+
+    recognition.onerror = (event) => {
+      const errName = event?.error || '';
+      // Benign: browser ended due to silence / our abort
+      if (errName === 'no-speech' || errName === 'aborted') return;
+      if (errName === 'not-allowed' || errName === 'service-not-allowed') {
+        intentionalStop = true;
+        if (onError) onError(event);
         return;
       }
-
-      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-      const recognition = new SpeechRec();
-      recognition.lang = 'th-TH';
-      recognition.interimResults = true;
-      recognition.continuous = !!continuous;
-      recognition.maxAlternatives = 3;
-
-      recognition.onstart = () => {
-        if (generation !== this._sttGeneration) return;
-        this.isListening = true;
-        this.activeRecognition = recognition;
-      };
-
-      recognition.onresult = (event) => {
-        if (generation !== this._sttGeneration) return;
-        let interim = '';
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const item = event.results[i];
-          if (item.isFinal) {
-            finalTranscript += item[0].transcript;
-          } else {
-            interim += item[0].transcript;
-          }
-        }
-        const text = (finalTranscript + ' ' + interim).trim();
-        lastHeard = text;
-        if (onResult) {
-          onResult({
-            final: finalTranscript.trim(),
-            interim: interim.trim(),
-            text,
-            isFinalSegment: !interim,
-            complete: false
-          });
-        }
-      };
-
-      recognition.onerror = (event) => {
-        if (generation !== this._sttGeneration) return;
-        const errName = event?.error || '';
-        if (errName === 'no-speech' || errName === 'aborted') return;
-        if (errName === 'not-allowed' || errName === 'service-not-allowed') {
-          endedIntentionally = true;
-          this._recognitionWantOpen = false;
-          if (onError) onError(event);
-          return;
-        }
-        if (onError) onError(event);
-      };
-
-      recognition.onend = () => {
-        if (generation !== this._sttGeneration) return;
-        if (this.activeRecognition === recognition) {
-          this.activeRecognition = null;
-        }
-        this.isListening = false;
-
-        if (stillWantOpen()) {
-          this._sttRestartsThisHold += 1;
-          this._sttRestartTimer = setTimeout(() => {
-            this._sttRestartTimer = null;
-            if (!stillWantOpen()) {
-              emitEnd(endedIntentionally);
-              return;
-            }
-            bindAndStart();
-          }, 300);
-          return;
-        }
-
-        emitEnd(endedIntentionally);
-      };
-
-      try {
-        recognition.start();
-        this.activeRecognition = recognition;
-      } catch (e) {
-        // Chrome: previous abort still settling
-        this._sttRestartTimer = setTimeout(() => {
-          this._sttRestartTimer = null;
-          if (generation !== this._sttGeneration || endedIntentionally || !this._recognitionWantOpen) {
-            emitEnd(endedIntentionally);
-            return;
-          }
-          try {
-            bindAndStart();
-          } catch (err2) {
-            if (onError) onError(err2);
-            emitEnd(false);
-          }
-        }, 350);
-      }
+      if (onError) onError(event);
     };
 
-    // Brief yield so a just-aborted session can release the mic
-    this._sttRestartTimer = setTimeout(() => {
-      this._sttRestartTimer = null;
-      bindAndStart();
-    }, 60);
+    recognition.onend = () => {
+      // Do NOT restart here — restarts cause mic on/off beeps ("дергает").
+      finish();
+    };
+
+    try {
+      recognition.start();
+      this.activeRecognition = recognition;
+    } catch (e) {
+      if (onError) onError(e);
+      finish();
+      return null;
+    }
 
     return {
       stop: () => {
-        if (generation !== this._sttGeneration) return;
-        endedIntentionally = true;
-        this._recognitionWantOpen = false;
-        this._clearSttRestartTimer();
-        const rec = this.activeRecognition;
-        // Prefer stop() so late finals can flush into onresult before onend
-        if (rec) {
+        if (finished) return;
+        intentionalStop = true;
+        try {
+          recognition.stop();
+        } catch (_) {
           try {
-            rec.stop();
-          } catch (_) {
-            this._detachAndAbort(rec);
-            this.activeRecognition = null;
-            emitEnd(true);
-          }
-        } else {
-          emitEnd(true);
+            recognition.abort();
+          } catch (_) {}
+          finish();
         }
       },
       abort: () => {
-        if (generation !== this._sttGeneration) return;
-        endedIntentionally = true;
-        this._recognitionWantOpen = false;
-        this._sttGeneration += 1;
-        this._clearSttRestartTimer();
-        this._detachAndAbort(this.activeRecognition);
-        this.activeRecognition = null;
-        this.isListening = false;
+        if (finished) return;
+        intentionalStop = true;
+        try {
+          recognition.onend = null;
+          recognition.onresult = null;
+          recognition.onerror = null;
+          recognition.onstart = null;
+          recognition.abort();
+        } catch (_) {}
+        finish();
       }
     };
   }
 
-  _clearSttRestartTimer() {
+  abortRecognitionHard() {
+    const rec = this.activeRecognition;
+    this.activeRecognition = null;
+    this.isListening = false;
+    this._recognitionWantOpen = false;
     if (this._sttRestartTimer) {
       clearTimeout(this._sttRestartTimer);
       this._sttRestartTimer = null;
     }
-  }
-
-  _detachAndAbort(rec) {
     if (!rec) return;
     try {
       rec.onstart = null;
@@ -528,8 +460,7 @@ class SpeechService {
       rec.onend = null;
     } catch (_) {}
     try {
-      if (typeof rec.abort === 'function') rec.abort();
-      else rec.stop?.();
+      rec.abort?.();
     } catch (_) {
       try {
         rec.stop?.();
@@ -537,33 +468,21 @@ class SpeechService {
     }
   }
 
-  /** Hard-close mic/recognition: clear timers, drop handlers, abort. */
-  abortRecognitionHard() {
-    this._clearSttRestartTimer();
-    this._recognitionWantOpen = false;
-    this._sttGeneration += 1;
-    this._detachAndAbort(this.activeRecognition);
-    this.activeRecognition = null;
-    this.isListening = false;
-  }
-
   stopRecognition({ silent = false } = {}) {
+    const rec = this.activeRecognition;
+    if (!rec) {
+      this.isListening = false;
+      return;
+    }
     if (silent) {
       this.abortRecognitionHard();
       return;
     }
-    this._recognitionWantOpen = false;
-    this._clearSttRestartTimer();
-    const rec = this.activeRecognition;
-    if (rec) {
-      try {
-        rec.stop();
-      } catch {
-        this.abortRecognitionHard();
-        return;
-      }
+    try {
+      rec.stop();
+    } catch {
+      this.abortRecognitionHard();
     }
-    this.isListening = false;
   }
 
   /**
