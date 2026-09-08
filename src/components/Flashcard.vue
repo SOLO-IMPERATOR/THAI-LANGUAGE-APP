@@ -182,6 +182,21 @@
               class="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
 
+            <div
+              v-if="!isSpeechSupported"
+              class="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-amber-950"
+              role="status"
+            >
+              <p class="text-xs font-black uppercase tracking-wider text-amber-800 mb-1">
+                Голосовая проверка недоступна
+              </p>
+              <p class="text-[12px] leading-relaxed text-amber-900/90">
+                В этом браузере нет Web Speech API (часто так в Firefox и части встроенных браузеров).
+                Для микрофона рекомендуем <strong>Google Chrome</strong>, <strong>Microsoft Edge</strong> или <strong>Safari</strong>.
+                Сейчас можно ввести ответ текстом или нажать «Засчитать».
+              </p>
+            </div>
+
             <div v-if="isSpeechSupported" class="flex flex-col items-center py-2 select-none">
               <button
                 @pointerdown.prevent="onPttDown"
@@ -477,7 +492,7 @@
                     Удерживайте микрофон и произнесите фразу, либо подтвердите знание:
                   </template>
                   <template v-else>
-                    В этом браузере нет Web Speech — подтвердите знание вручную или введите ответ текстом.
+                    Голосовая проверка в этом браузере недоступна — подтвердите знание вручную.
                   </template>
                 </p>
               </div>
@@ -489,6 +504,21 @@
             >
               ✕
             </button>
+          </div>
+
+          <div
+            v-if="!isSpeechSupported"
+            class="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-amber-950"
+            role="status"
+          >
+            <p class="text-xs font-black uppercase tracking-wider text-amber-800 mb-1">
+              Голосовая проверка недоступна
+            </p>
+            <p class="text-[12px] leading-relaxed text-amber-900/90">
+              Web Speech API не поддерживается (часто Firefox и некоторые встроенные браузеры).
+              Для произношения рекомендуем <strong>Google Chrome</strong>, <strong>Microsoft Edge</strong> или <strong>Safari</strong>.
+              Без микрофона можно слушать эталон и подтвердить знание кнопкой ниже.
+            </p>
           </div>
 
           <!-- Microphone Big Controller — push to talk (Web Speech only) -->
@@ -683,6 +713,15 @@
       <!-- Footer Action Area -->
       <!-- Practice: Проверить → Учить → Пропустить -->
       <div v-if="cardPhase === 'practice'" class="w-full pt-4 border-t border-slate-100">
+        <div
+          v-if="!isSpeechSupported"
+          class="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] leading-relaxed text-amber-950"
+          role="status"
+        >
+          <span class="font-black uppercase tracking-wider text-amber-800">Микрофон недоступен.</span>
+          Web Speech нет в этом браузере (часто Firefox). Для голоса откройте в
+          <strong>Chrome</strong>, <strong>Edge</strong> или <strong>Safari</strong>.
+        </div>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full">
           <button
             @click="handleAlreadyKnow"
