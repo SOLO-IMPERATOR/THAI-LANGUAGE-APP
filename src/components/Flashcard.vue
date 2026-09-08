@@ -559,6 +559,22 @@
             >
               <span>{{ isPlayingUserRec ? '⏸ Моя запись' : '🎤 Моя запись' }}</span>
             </button>
+            <button
+              @pointerdown.prevent="onMemoPttDown"
+              @pointerup.prevent="onMemoPttUp"
+              @pointercancel.prevent="onMemoPttUp"
+              @lostpointercapture="onMemoPttUp"
+              @contextmenu.prevent
+              type="button"
+              class="px-4 py-2 rounded-xl border text-xs font-bold transition cursor-pointer touch-none select-none"
+              :class="
+                isRecordingMemo
+                  ? 'bg-rose-600 text-white border-rose-500'
+                  : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+              "
+            >
+              {{ isRecordingMemo ? 'Запись… отпустите' : userRecordingUrl ? 'Перезаписать себя' : 'Записать себя' }}
+            </button>
           </div>
 
 
@@ -641,6 +657,18 @@
                   class="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center gap-1.5 shadow-xs transition cursor-pointer"
                 >
                   <span>{{ isPlayingUserRec ? '⏸' : '🎤' }} Моя запись</span>
+                </button>
+                <button
+                  @pointerdown.prevent="onMemoPttDown"
+                  @pointerup.prevent="onMemoPttUp"
+                  @pointercancel.prevent="onMemoPttUp"
+                  @lostpointercapture="onMemoPttUp"
+                  @contextmenu.prevent
+                  type="button"
+                  class="px-3 py-1.5 rounded-xl text-xs font-bold border cursor-pointer touch-none select-none"
+                  :class="isRecordingMemo ? 'bg-rose-600 text-white border-rose-500' : 'bg-white text-slate-700 border-slate-200'"
+                >
+                  {{ isRecordingMemo ? 'Запись…' : 'Записать себя' }}
                 </button>
               </div>
 
@@ -848,6 +876,7 @@ const pronunciationAnalysis = ref(null);
 const deconstructResult = ref(null);
 const userRecordingUrl = ref(null);
 const isPlayingUserRec = ref(false);
+const isRecordingMemo = ref(false);
 
 let mediaRecorder = null;
 let mediaStream = null;
@@ -1277,7 +1306,7 @@ async function startThaiListening() {
   firstSpeechAt = 0;
   listenStartedAt = Date.now();
   didFinalizeThisListen = false;
-  clearUserRecording();
+  // Keep prior voice memo on the card; only clear STT fields
   if (mediaRecorder || mediaStream) {
     try {
       stopMediaCapture();
@@ -1313,8 +1342,8 @@ async function startThaiListening() {
     }
   });
 
-  // Same press gesture — open recording once
-  ensureMediaCapture();
+  // Do NOT open MediaRecorder here — getUserMedia steals the mic from SpeechRecognition.
+  // Own-voice memo is a separate push-to-talk after scoring («Записать себя»).
 }
 
 let pttHeld = false;
@@ -1352,6 +1381,52 @@ function toggleThaiListening() {
   } else {
     onPttDown({ pointerId: 1, currentTarget: null });
   }
+}
+
+let memoPttHeld = false;
+let memoPointerId = null;
+
+async function onMemoPttDown(e) {
+  if (isListening.value || isRecordingMemo.value) return;
+  memoPttHeld = true;
+  memoPointerId = e.pointerId ?? null;
+  try {
+    e.currentTarget?.setPointerCapture?.(e.pointerId);
+  } catch (_) {}
+  isRecordingMemo.value = true;
+  clearUserRecording();
+  if (mediaRecorder || mediaStream) {
+    try {
+      stopMediaCapture();
+    } catch (_) {}
+  }
+  mediaCapturePromise = null;
+  await startMediaCapture();
+}
+
+function onMemoPttUp(e) {
+  if (!memoPttHeld) return;
+  if (memoPointerId != null && e.pointerId != null && e.pointerId !== memoPointerId) return;
+  memoPttHeld = false;
+  memoPointerId = null;
+  try {
+    e.currentTarget?.releasePointerCapture?.(e.pointerId);
+  } catch (_) {}
+  isRecordingMemo.value = false;
+  stopVad();
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  } catch (_) {}
+  setTimeout(() => {
+    if (mediaStream) {
+      try {
+        mediaStream.getTracks().forEach((t) => t.stop());
+      } catch (_) {}
+      mediaStream = null;
+    }
+    mediaRecorder = null;
+    mediaCapturePromise = null;
+  }, 400);
 }
 
 function stopListening({ skipAnalyze = false } = {}) {
