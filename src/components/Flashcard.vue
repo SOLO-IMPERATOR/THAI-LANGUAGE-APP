@@ -833,12 +833,6 @@ let recordChunks = [];
 
 const MAX_LISTEN_MS = 20000;
 
-const micHint = computed(() => {
-  if (isProcessingStt.value) return sttStatus.value || 'Распознаём на устройстве…';
-  if (isListening.value) return 'Говорите… отпустите, когда закончите';
-  return 'Удерживайте микрофон и говорите (≥ 60%)';
-});
-
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
     clearTimeout(hardMaxTimer);
