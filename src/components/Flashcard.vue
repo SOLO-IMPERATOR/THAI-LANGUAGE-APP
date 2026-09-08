@@ -868,7 +868,7 @@ let pttPointerId = null;
 let micCooldownUntil = 0;
 
 const MAX_LISTEN_MS = 18000;
-const MIC_COOLDOWN_MS = 500;
+const MIC_COOLDOWN_MS = 250;
 
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
@@ -1039,9 +1039,9 @@ function closePronunciationTest() {
 }
 
 function startThaiListening() {
-  if (!isSpeechSupported.value || isListening.value || stoppingListen) return;
-  if (Date.now() < micCooldownUntil) return;
+  if (!isSpeechSupported.value || stoppingListen) return;
 
+  const waitMs = Math.max(0, micCooldownUntil - Date.now());
   stoppingListen = false;
   isListening.value = true;
   spokenThaiText.value = '';
@@ -1050,51 +1050,57 @@ function startThaiListening() {
   didFinalizeThisListen = false;
   clearHardMaxTimer();
   hardMaxTimer = setTimeout(() => {
-    if (isListening.value) stopListening({ skipAnalyze: false });
+    if (pttHeld) stopListening({ skipAnalyze: false });
   }, MAX_LISTEN_MS);
 
-  speechService.abortRecognitionHard();
-
-  recognitionHandle = speechService.startThaiRecognition({
-    continuous: true,
-    keepAlive: true,
-    shouldContinue: () => pttHeld && !stoppingListen,
-    onResult: ({ text }) => {
-      if (text?.trim()) spokenThaiText.value = text;
-    },
-    onError: (err) => {
-      console.warn('Thai STT error:', err);
-    },
-    onEnd: (finalTranscript, meta = {}) => {
-      recognitionHandle = null;
-      const finalText = (finalTranscript || spokenThaiText.value || '').trim();
-      if (finalText) spokenThaiText.value = finalText;
-      // keepAlive may still be holding — only clear UI when session truly ended
-      if (pttHeld && !stoppingListen && !meta?.intentional) {
-        isListening.value = true;
-        return;
-      }
+  const begin = () => {
+    if (!pttHeld || stoppingListen) {
       isListening.value = false;
-      if (pendingFinalize && finalText) {
-        pendingFinalize = false;
-        finalizePronunciation(finalText);
-      }
+      return;
     }
-  });
+    recognitionHandle = speechService.startThaiRecognition({
+      continuous: true,
+      keepAlive: true,
+      shouldContinue: () => pttHeld && !stoppingListen,
+      onResult: ({ text }) => {
+        if (text?.trim()) spokenThaiText.value = text;
+      },
+      onError: (err) => {
+        console.warn('Thai STT error:', err);
+      },
+      onEnd: (finalTranscript, meta = {}) => {
+        recognitionHandle = null;
+        const finalText = (finalTranscript || spokenThaiText.value || '').trim();
+        if (finalText) spokenThaiText.value = finalText;
+        if (pttHeld && !stoppingListen && !meta?.intentional) {
+          isListening.value = true;
+          return;
+        }
+        isListening.value = false;
+        if (pendingFinalize && finalText) {
+          pendingFinalize = false;
+          finalizePronunciation(finalText);
+        }
+      }
+    });
+  };
+
+  if (waitMs > 0) {
+    setTimeout(begin, waitMs);
+  } else {
+    begin();
+  }
 }
 
 function onPttDown(e) {
   if (!isSpeechSupported.value || stoppingListen) return;
-  if (Date.now() < micCooldownUntil) return;
   if (pttHeld) return;
   pttHeld = true;
   pttPointerId = e.pointerId ?? null;
   try {
     e.currentTarget?.setPointerCapture?.(e.pointerId);
   } catch (_) {}
-  if (!isListening.value) {
-    startThaiListening();
-  }
+  startThaiListening();
 }
 
 function onPttUp(e) {
@@ -1124,14 +1130,14 @@ function stopListening({ skipAnalyze = false } = {}) {
   if (recognitionHandle?.stop) {
     recognitionHandle.stop();
     recognitionHandle = null;
-  } else if (recognitionHandle?.abort) {
-    recognitionHandle.abort();
+  } else if (skipAnalyze) {
+    speechService.abortRecognitionHard();
     recognitionHandle = null;
   } else {
-    speechService.abortRecognitionHard();
+    speechService.stopRecognition();
+    recognitionHandle = null;
   }
 
-  // Prevent rapid re-open while Chrome still holds the previous mic session
   micCooldownUntil = Date.now() + MIC_COOLDOWN_MS;
 
   if (skipAnalyze) {
@@ -1161,7 +1167,7 @@ function stopListening({ skipAnalyze = false } = {}) {
       }
     }
     stoppingListen = false;
-  }, 500);
+  }, 400);
 }
 
 async function creditRecallWithoutSpeech() {

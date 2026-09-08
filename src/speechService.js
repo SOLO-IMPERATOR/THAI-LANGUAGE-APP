@@ -324,8 +324,8 @@ class SpeechService {
 
   /**
    * Start Thai speech recognition (STT) in 'th-TH'.
-   * keepAlive: if the browser ends the session while PTT is held, start a *new*
-   * SpeechRecognition instance (reusing one object leaks mic state in Chrome).
+   * Always uses a fresh SpeechRecognition instance. keepAlive recreates (not reuses)
+   * the instance if the browser ends early while PTT is still held.
    */
   startThaiRecognition({
     onResult,
@@ -341,15 +341,21 @@ class SpeechService {
       return null;
     }
 
-    this.abortRecognitionHard();
+    // Tear down any previous session without killing the generation we're about to use
+    this._clearSttRestartTimer();
+    this._detachAndAbort(this.activeRecognition);
+    this.activeRecognition = null;
+    this.isListening = false;
+
     this._sttGeneration += 1;
     const generation = this._sttGeneration;
     this._recognitionWantOpen = true;
     this._sttRestartsThisHold = 0;
 
     let finalTranscript = '';
+    let lastHeard = '';
     let endedIntentionally = false;
-    const MAX_RESTARTS_PER_HOLD = 6;
+    const MAX_RESTARTS_PER_HOLD = 5;
 
     const stillWantOpen = () =>
       keepAlive &&
@@ -359,12 +365,13 @@ class SpeechService {
       this._sttRestartsThisHold < MAX_RESTARTS_PER_HOLD &&
       (typeof shouldContinue !== 'function' || !!shouldContinue());
 
-    const finish = (intentional) => {
+    const emitEnd = (intentional) => {
       if (generation !== this._sttGeneration) return;
       this._recognitionWantOpen = false;
       this.isListening = false;
       this.activeRecognition = null;
-      if (onEnd) onEnd(finalTranscript.trim(), { intentional });
+      const text = (finalTranscript || lastHeard || '').trim();
+      if (onEnd) onEnd(text, { intentional: !!intentional });
     };
 
     const bindAndStart = () => {
@@ -396,11 +403,13 @@ class SpeechService {
             interim += item[0].transcript;
           }
         }
+        const text = (finalTranscript + ' ' + interim).trim();
+        lastHeard = text;
         if (onResult) {
           onResult({
             final: finalTranscript.trim(),
             interim: interim.trim(),
-            text: (finalTranscript + ' ' + interim).trim(),
+            text,
             isFinalSegment: !interim,
             complete: false
           });
@@ -417,7 +426,6 @@ class SpeechService {
           if (onError) onError(event);
           return;
         }
-        // "network" / busy often recover on a fresh instance after a short pause
         if (onError) onError(event);
       };
 
@@ -430,76 +438,88 @@ class SpeechService {
 
         if (stillWantOpen()) {
           this._sttRestartsThisHold += 1;
-          // Give Chrome time to release the mic before opening a new session
           this._sttRestartTimer = setTimeout(() => {
             this._sttRestartTimer = null;
             if (!stillWantOpen()) {
-              finish(endedIntentionally);
+              emitEnd(endedIntentionally);
               return;
             }
             bindAndStart();
-          }, 220);
+          }, 300);
           return;
         }
 
-        finish(endedIntentionally);
+        emitEnd(endedIntentionally);
       };
 
       try {
         recognition.start();
         this.activeRecognition = recognition;
       } catch (e) {
-        // InvalidStateError: previous session still closing — retry once
+        // Chrome: previous abort still settling
         this._sttRestartTimer = setTimeout(() => {
           this._sttRestartTimer = null;
           if (generation !== this._sttGeneration || endedIntentionally || !this._recognitionWantOpen) {
-            finish(endedIntentionally);
+            emitEnd(endedIntentionally);
             return;
           }
           try {
             bindAndStart();
           } catch (err2) {
             if (onError) onError(err2);
-            finish(false);
+            emitEnd(false);
           }
-        }, 280);
+        }, 350);
       }
     };
 
-    bindAndStart();
+    // Brief yield so a just-aborted session can release the mic
+    this._sttRestartTimer = setTimeout(() => {
+      this._sttRestartTimer = null;
+      bindAndStart();
+    }, 60);
 
     return {
       stop: () => {
+        if (generation !== this._sttGeneration) return;
         endedIntentionally = true;
         this._recognitionWantOpen = false;
-        // Bump generation so any late onend/restart is ignored
-        if (generation === this._sttGeneration) {
-          this._sttGeneration += 1;
+        this._clearSttRestartTimer();
+        const rec = this.activeRecognition;
+        // Prefer stop() so late finals can flush into onresult before onend
+        if (rec) {
+          try {
+            rec.stop();
+          } catch (_) {
+            this._detachAndAbort(rec);
+            this.activeRecognition = null;
+            emitEnd(true);
+          }
+        } else {
+          emitEnd(true);
         }
-        this.abortRecognitionHard();
-        if (onEnd) onEnd(finalTranscript.trim(), { intentional: true });
       },
       abort: () => {
+        if (generation !== this._sttGeneration) return;
         endedIntentionally = true;
         this._recognitionWantOpen = false;
-        if (generation === this._sttGeneration) {
-          this._sttGeneration += 1;
-        }
-        this.abortRecognitionHard();
+        this._sttGeneration += 1;
+        this._clearSttRestartTimer();
+        this._detachAndAbort(this.activeRecognition);
+        this.activeRecognition = null;
+        this.isListening = false;
       }
     };
   }
 
-  /** Hard-close mic/recognition: clear timers, drop handlers, abort. */
-  abortRecognitionHard() {
+  _clearSttRestartTimer() {
     if (this._sttRestartTimer) {
       clearTimeout(this._sttRestartTimer);
       this._sttRestartTimer = null;
     }
-    this._recognitionWantOpen = false;
-    const rec = this.activeRecognition;
-    this.activeRecognition = null;
-    this.isListening = false;
+  }
+
+  _detachAndAbort(rec) {
     if (!rec) return;
     try {
       rec.onstart = null;
@@ -509,12 +529,22 @@ class SpeechService {
     } catch (_) {}
     try {
       if (typeof rec.abort === 'function') rec.abort();
-      else if (typeof rec.stop === 'function') rec.stop();
+      else rec.stop?.();
     } catch (_) {
       try {
         rec.stop?.();
       } catch (_) {}
     }
+  }
+
+  /** Hard-close mic/recognition: clear timers, drop handlers, abort. */
+  abortRecognitionHard() {
+    this._clearSttRestartTimer();
+    this._recognitionWantOpen = false;
+    this._sttGeneration += 1;
+    this._detachAndAbort(this.activeRecognition);
+    this.activeRecognition = null;
+    this.isListening = false;
   }
 
   stopRecognition({ silent = false } = {}) {
@@ -523,24 +553,15 @@ class SpeechService {
       return;
     }
     this._recognitionWantOpen = false;
-    if (this._sttRestartTimer) {
-      clearTimeout(this._sttRestartTimer);
-      this._sttRestartTimer = null;
-    }
+    this._clearSttRestartTimer();
     const rec = this.activeRecognition;
     if (rec) {
       try {
-        if (typeof rec.stop === 'function') {
-          rec.stop();
-        } else {
-          this.abortRecognitionHard();
-          return;
-        }
+        rec.stop();
       } catch {
         this.abortRecognitionHard();
         return;
       }
-      this.activeRecognition = null;
     }
     this.isListening = false;
   }
