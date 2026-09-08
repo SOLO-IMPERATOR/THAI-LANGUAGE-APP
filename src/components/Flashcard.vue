@@ -182,12 +182,16 @@
               class="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
 
-            <div class="flex flex-col items-center py-2">
+            <div class="flex flex-col items-center py-2 select-none">
               <button
-                @click="toggleThaiListening"
+                @pointerdown.prevent="onPttDown"
+                @pointerup.prevent="onPttUp"
+                @pointercancel.prevent="onPttUp"
+                @lostpointercapture="onPttUp"
+                @contextmenu.prevent
                 :disabled="!isSpeechSupported"
                 type="button"
-                class="relative flex items-center justify-center w-14 h-14 rounded-full transition-all active:scale-95 shadow-lg cursor-pointer"
+                class="relative flex items-center justify-center w-14 h-14 rounded-full transition-all active:scale-95 shadow-lg cursor-pointer touch-none"
                 :class="
                   isListening
                     ? 'bg-rose-600 text-white ring-4 ring-rose-200'
@@ -200,7 +204,7 @@
                 </svg>
               </button>
               <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Слушаю… стоп после тишины ~1.5 с' : 'или произнесите фразу целиком (≥ 60%)' }}
+                {{ isListening ? 'Говорите… отпустите, чтобы остановить' : 'Удерживайте микрофон и говорите (≥ 60%)' }}
               </span>
             </div>
 
@@ -275,13 +279,17 @@
               <svg v-else class="w-7 h-7 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M12 18V6l-4 4H5v4h3l4 4z" /></svg>
             </button>
             <button
-              @click="toggleThaiListening"
+              @pointerdown.prevent="onPttDown"
+              @pointerup.prevent="onPttUp"
+              @pointercancel.prevent="onPttUp"
+              @lostpointercapture="onPttUp"
+              @contextmenu.prevent
               :disabled="!isSpeechSupported"
               type="button"
-              class="px-4 py-2.5 rounded-2xl text-xs font-bold text-white cursor-pointer"
+              class="px-4 py-2.5 rounded-2xl text-xs font-bold text-white cursor-pointer touch-none select-none"
               :class="isListening ? 'bg-rose-600' : 'bg-indigo-600 hover:bg-indigo-700'"
             >
-              {{ isListening ? 'Слушаю…' : 'Произнести для практики' }}
+              {{ isListening ? 'Говорите… отпустите' : 'Удерживайте и произнесите' }}
             </button>
           </div>
 
@@ -489,12 +497,16 @@
             </button>
           </div>
 
-          <!-- Microphone Big Controller -->
-          <div class="flex flex-col items-center justify-center py-2">
+          <!-- Microphone Big Controller — push to talk -->
+          <div class="flex flex-col items-center justify-center py-2 select-none">
             <button
-              @click="toggleThaiListening"
+              @pointerdown.prevent="onPttDown"
+              @pointerup.prevent="onPttUp"
+              @pointercancel.prevent="onPttUp"
+              @lostpointercapture="onPttUp"
+              @contextmenu.prevent
               :disabled="!isSpeechSupported"
-              class="relative flex items-center justify-center w-16 h-16 rounded-full transition-all active:scale-95 shadow-lg focus:outline-none cursor-pointer"
+              class="relative flex items-center justify-center w-16 h-16 rounded-full transition-all active:scale-95 shadow-lg focus:outline-none cursor-pointer touch-none"
               :class="
                 isListening
                   ? 'bg-rose-600 text-white shadow-rose-200 ring-4 ring-rose-200'
@@ -516,7 +528,7 @@
             </button>
 
             <span class="text-xs font-bold mt-2 text-slate-700">
-              {{ isListening ? 'Слушаю… остановится сама, когда замолчите (~1.5 с)' : 'Нажмите микрофон и произнесите фразу целиком' }}
+              {{ isListening ? 'Говорите… отпустите кнопку, чтобы оценить' : 'Удерживайте микрофон и произнесите фразу' }}
             </span>
           </div>
 
@@ -879,18 +891,7 @@ function clearHardMaxTimer() {
 }
 
 function scheduleSttSilenceStop() {
-  clearSttSilenceTimer();
-  sttSilenceTimer = setTimeout(() => {
-    sttSilenceTimer = null;
-    if (!isListening.value || stoppingListen) return;
-    if (!(spokenThaiText.value || '').trim()) return;
-    const spokenFor = Date.now() - (firstSpeechAt || Date.now());
-    if (spokenFor < MIN_UTTERANCE_MS) {
-      scheduleSttSilenceStop();
-      return;
-    }
-    stopListening({ skipAnalyze: false });
-  }, STT_SILENCE_MS);
+  // Push-to-talk: stop is controlled by releasing the button — no silence auto-stop
 }
 
 function stopVad() {
@@ -951,16 +952,12 @@ function startVad(stream) {
         silenceStartedAt = 0;
       } else if (speechHeard && rms <= RMS_SILENCE) {
         if (!silenceStartedAt) silenceStartedAt = now;
-        const silentFor = now - silenceStartedAt;
-        const spokenFor = now - firstSpeechAt;
-        if (silentFor >= SILENCE_STOP_MS && spokenFor >= MIN_UTTERANCE_MS) {
-          stopListening({ skipAnalyze: false });
-          return;
-        }
+        // Push-to-talk: do not auto-stop on silence
       } else if (speechHeard) {
-        // Between thresholds — don't reset silence aggressively
+        // Between thresholds
       }
 
+      // Safety hard cap only
       if (now - listenStartedAt >= MAX_LISTEN_MS) {
         stopListening({ skipAnalyze: false });
         return;
@@ -1299,7 +1296,6 @@ async function startThaiListening() {
       if (text?.trim()) {
         spokenThaiText.value = text;
         if (!firstSpeechAt) firstSpeechAt = Date.now();
-        scheduleSttSilenceStop();
       }
     },
     onError: (err) => {
@@ -1309,21 +1305,53 @@ async function startThaiListening() {
       recognitionHandle = null;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
       if (finalText) spokenThaiText.value = finalText;
-      // Browser ended the only STT session — finalize (silence timer / manual stop also finalize)
-      if (isListening.value) {
-        stopListening({ skipAnalyze: false });
-      } else if (pendingFinalize && finalText) {
+      // If button already released, finalize here; otherwise wait for onPttUp → stopListening
+      if (!pttHeld && pendingFinalize && finalText) {
         pendingFinalize = false;
         finalizePronunciation(finalText);
       }
-      stoppingListen = false;
     }
   });
 
-  // Own-voice recording: one delayed getUserMedia (not on every STT chunk)
-  setTimeout(() => {
-    if (isListening.value) ensureMediaCapture();
-  }, 900);
+  // Same press gesture — open recording once
+  ensureMediaCapture();
+}
+
+let pttHeld = false;
+let pttPointerId = null;
+
+function onPttDown(e) {
+  if (!isSpeechSupported.value || stoppingListen) return;
+  if (pttHeld) return;
+  pttHeld = true;
+  pttPointerId = e.pointerId ?? null;
+  try {
+    e.currentTarget?.setPointerCapture?.(e.pointerId);
+  } catch (_) {}
+  if (!isListening.value) {
+    startThaiListening();
+  }
+}
+
+function onPttUp(e) {
+  if (!pttHeld) return;
+  if (pttPointerId != null && e.pointerId != null && e.pointerId !== pttPointerId) return;
+  pttHeld = false;
+  pttPointerId = null;
+  try {
+    e.currentTarget?.releasePointerCapture?.(e.pointerId);
+  } catch (_) {}
+  if (isListening.value) {
+    stopListening({ skipAnalyze: false });
+  }
+}
+
+function toggleThaiListening() {
+  if (isListening.value || pttHeld) {
+    onPttUp({ pointerId: pttPointerId });
+  } else {
+    onPttDown({ pointerId: 1, currentTarget: null });
+  }
 }
 
 function stopListening({ skipAnalyze = false } = {}) {
@@ -1345,6 +1373,8 @@ function stopListening({ skipAnalyze = false } = {}) {
     speechService.stopRecognition();
   }
   isListening.value = false;
+  pttHeld = false;
+  pttPointerId = null;
 
   try {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
@@ -1383,21 +1413,13 @@ function stopListening({ skipAnalyze = false } = {}) {
           score: 0,
           verdict: 'unclear',
           feedbackTitle: 'Речь не распознана',
-          feedbackTip: 'Нажмите микрофон ещё раз и говорите громче до паузы.',
+          feedbackTip: 'Удерживайте микрофон и говорите громче.',
           syllableResults: []
         };
       }
     }
     stoppingListen = false;
   }, 450);
-}
-
-function toggleThaiListening() {
-  if (isListening.value) {
-    stopListening({ skipAnalyze: false });
-  } else {
-    startThaiListening();
-  }
 }
 
 async function creditRecallWithoutSpeech() {
