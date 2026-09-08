@@ -46,8 +46,11 @@ async function getTranscriber(onProgress) {
       env.allowLocalModels = false;
       env.useBrowserCache = true;
 
+      // q8/uint8 Whisper is broken on ORT 1.25 bundled with transformers.js 4.2
+      // (Missing required scale … MatMulNBits). Use fp32 until runtime is patched.
       transcriber = await pipeline('automatic-speech-recognition', MODEL_ID, {
-        dtype: 'q8',
+        dtype: 'fp32',
+        device: 'wasm',
         progress_callback: (ev) => {
           if (typeof onProgress === 'function') onProgress(ev);
         }
