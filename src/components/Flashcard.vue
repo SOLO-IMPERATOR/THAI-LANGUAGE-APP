@@ -216,16 +216,6 @@
               </div>
             </div>
 
-            <div v-if="userRecordingUrl" class="flex justify-center">
-              <button
-                @click="playUserRecording"
-                type="button"
-                class="px-4 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold cursor-pointer"
-              >
-                {{ isPlayingUserRec ? '⏸ Моя запись' : '🎤 Послушать мою запись' }}
-              </button>
-            </div>
-
             <p v-if="recallFeedback" class="text-xs font-bold text-center" :class="recallOk ? 'text-emerald-700' : 'text-rose-600'">
               {{ recallFeedback }}
             </p>
@@ -484,7 +474,7 @@
                   Проверка ответа (th-TH)
                 </h4>
                 <p class="text-[11px] text-slate-500">
-                  Нажмите на микрофон для записи или подтвердите знание:
+                  Удерживайте микрофон и произнесите фразу, либо подтвердите знание:
                 </p>
               </div>
             </div>
@@ -542,7 +532,7 @@
             </div>
           </div>
 
-          <!-- Listen reference + own recording -->
+          <!-- Listen reference -->
           <div class="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-center gap-2">
             <button
               @click="playAudio()"
@@ -550,30 +540,6 @@
               class="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <span>🔊 Послушать эталон ({{ currentSpeed }}×)</span>
-            </button>
-            <button
-              v-if="userRecordingUrl"
-              @click="playUserRecording"
-              type="button"
-              class="px-4 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <span>{{ isPlayingUserRec ? '⏸ Моя запись' : '🎤 Моя запись' }}</span>
-            </button>
-            <button
-              @pointerdown.prevent="onMemoPttDown"
-              @pointerup.prevent="onMemoPttUp"
-              @pointercancel.prevent="onMemoPttUp"
-              @lostpointercapture="onMemoPttUp"
-              @contextmenu.prevent
-              type="button"
-              class="px-4 py-2 rounded-xl border text-xs font-bold transition cursor-pointer touch-none select-none"
-              :class="
-                isRecordingMemo
-                  ? 'bg-rose-600 text-white border-rose-500'
-                  : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-              "
-            >
-              {{ isRecordingMemo ? 'Запись… отпустите' : userRecordingUrl ? 'Перезаписать себя' : 'Записать себя' }}
             </button>
           </div>
 
@@ -650,26 +616,6 @@
                 >
                   <span>🔊 Эталон ({{ currentSpeed }}×)</span>
                 </button>
-                <button
-                  v-if="userRecordingUrl"
-                  @click="playUserRecording"
-                  type="button"
-                  class="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold flex items-center gap-1.5 shadow-xs transition cursor-pointer"
-                >
-                  <span>{{ isPlayingUserRec ? '⏸' : '🎤' }} Моя запись</span>
-                </button>
-                <button
-                  @pointerdown.prevent="onMemoPttDown"
-                  @pointerup.prevent="onMemoPttUp"
-                  @pointercancel.prevent="onMemoPttUp"
-                  @lostpointercapture="onMemoPttUp"
-                  @contextmenu.prevent
-                  type="button"
-                  class="px-3 py-1.5 rounded-xl text-xs font-bold border cursor-pointer touch-none select-none"
-                  :class="isRecordingMemo ? 'bg-rose-600 text-white border-rose-500' : 'bg-white text-slate-700 border-slate-200'"
-                >
-                  {{ isRecordingMemo ? 'Запись…' : 'Записать себя' }}
-                </button>
               </div>
 
               <button
@@ -695,14 +641,6 @@
                 class="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 border border-slate-200 text-xs font-bold cursor-pointer"
               >
                 🔊 Эталон
-              </button>
-              <button
-                v-if="userRecordingUrl"
-                @click="playUserRecording"
-                type="button"
-                class="px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold cursor-pointer"
-              >
-                🎤 Моя запись
               </button>
             </div>
             <button
@@ -874,257 +812,22 @@ const isSpeechSupported = ref(speechService.isSpeechRecognitionSupported());
 const spokenThaiText = ref('');
 const pronunciationAnalysis = ref(null);
 const deconstructResult = ref(null);
-const userRecordingUrl = ref(null);
-const isPlayingUserRec = ref(false);
-const isRecordingMemo = ref(false);
 
-let mediaRecorder = null;
-let mediaStream = null;
-let mediaChunks = [];
-let userRecAudio = null;
 let recognitionHandle = null;
 let pendingFinalize = false;
-let firstSpeechAt = 0;
-let listenStartedAt = 0;
-
-let audioCtx = null;
-let analyserNode = null;
-let vadRaf = null;
-let speechHeard = false;
-let silenceStartedAt = 0;
 let stoppingListen = false;
-let sttSilenceTimer = null;
 let hardMaxTimer = null;
-let mediaCapturePromise = null;
 let didFinalizeThisListen = false;
+let pttHeld = false;
+let pttPointerId = null;
 
-const SILENCE_STOP_MS = 1400;
-const MIN_UTTERANCE_MS = 900;
 const MAX_LISTEN_MS = 18000;
-const RMS_SPEECH = 0.035;
-const RMS_SILENCE = 0.022;
-const STT_SILENCE_MS = 1600;
-
-function clearSttSilenceTimer() {
-  if (sttSilenceTimer) {
-    clearTimeout(sttSilenceTimer);
-    sttSilenceTimer = null;
-  }
-}
 
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
     clearTimeout(hardMaxTimer);
     hardMaxTimer = null;
   }
-}
-
-function scheduleSttSilenceStop() {
-  // Push-to-talk: stop is controlled by releasing the button — no silence auto-stop
-}
-
-function stopVad() {
-  clearSttSilenceTimer();
-  clearHardMaxTimer();
-  if (vadRaf) {
-    cancelAnimationFrame(vadRaf);
-    vadRaf = null;
-  }
-  analyserNode = null;
-  if (audioCtx) {
-    try {
-      audioCtx.close();
-    } catch (_) {}
-    audioCtx = null;
-  }
-}
-
-function measureRms(analyser) {
-  const buf = new Uint8Array(analyser.fftSize);
-  analyser.getByteTimeDomainData(buf);
-  let sum = 0;
-  for (let i = 0; i < buf.length; i++) {
-    const v = (buf[i] - 128) / 128;
-    sum += v * v;
-  }
-  return Math.sqrt(sum / buf.length);
-}
-
-function startVad(stream) {
-  stopVad();
-  speechHeard = false;
-  silenceStartedAt = 0;
-  try {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    audioCtx = new Ctx();
-    const source = audioCtx.createMediaStreamSource(stream);
-    analyserNode = audioCtx.createAnalyser();
-    analyserNode.fftSize = 2048;
-    analyserNode.smoothingTimeConstant = 0.3;
-    source.connect(analyserNode);
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
-
-    const tick = () => {
-      if (!isListening.value || !analyserNode || stoppingListen) {
-        vadRaf = null;
-        return;
-      }
-      const rms = measureRms(analyserNode);
-      const now = Date.now();
-
-      if (rms >= RMS_SPEECH) {
-        if (!speechHeard) {
-          speechHeard = true;
-          firstSpeechAt = now;
-        }
-        silenceStartedAt = 0;
-      } else if (speechHeard && rms <= RMS_SILENCE) {
-        if (!silenceStartedAt) silenceStartedAt = now;
-        // Push-to-talk: do not auto-stop on silence
-      } else if (speechHeard) {
-        // Between thresholds
-      }
-
-      // Safety hard cap only
-      if (now - listenStartedAt >= MAX_LISTEN_MS) {
-        stopListening({ skipAnalyze: false });
-        return;
-      }
-
-      vadRaf = requestAnimationFrame(tick);
-    };
-    vadRaf = requestAnimationFrame(tick);
-  } catch (err) {
-    console.warn('VAD unavailable:', err);
-  }
-}
-
-function clearUserRecording() {
-  if (userRecAudio) {
-    try {
-      userRecAudio.pause();
-      userRecAudio.src = '';
-    } catch (_) {}
-    userRecAudio = null;
-  }
-  isPlayingUserRec.value = false;
-  if (userRecordingUrl.value) {
-    try {
-      URL.revokeObjectURL(userRecordingUrl.value);
-    } catch (_) {}
-    userRecordingUrl.value = null;
-  }
-}
-
-function stopMediaCapture() {
-  stopVad();
-  try {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-    }
-  } catch (_) {}
-  mediaRecorder = null;
-  mediaCapturePromise = null;
-  if (mediaStream) {
-    try {
-      mediaStream.getTracks().forEach((t) => t.stop());
-    } catch (_) {}
-    mediaStream = null;
-  }
-}
-
-async function startMediaCapture() {
-  if (mediaRecorder || mediaCapturePromise) return mediaCapturePromise;
-  clearUserRecording();
-  mediaChunks = [];
-  if (!navigator.mediaDevices?.getUserMedia) {
-    return null;
-  }
-  mediaCapturePromise = (async () => {
-    try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-      startVad(mediaStream);
-
-      if (typeof MediaRecorder !== 'undefined') {
-        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus'
-          : MediaRecorder.isTypeSupported('audio/mp4')
-            ? 'audio/mp4'
-            : MediaRecorder.isTypeSupported('audio/ogg')
-              ? 'audio/ogg'
-              : '';
-        mediaRecorder = mime
-          ? new MediaRecorder(mediaStream, { mimeType: mime })
-          : new MediaRecorder(mediaStream);
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) mediaChunks.push(e.data);
-        };
-        mediaRecorder.onstop = () => {
-          if (mediaChunks.length) {
-            const blob = new Blob(mediaChunks, {
-              type: mediaRecorder?.mimeType || mediaChunks[0]?.type || 'audio/webm'
-            });
-            if (blob.size > 0) {
-              if (userRecordingUrl.value) {
-                try {
-                  URL.revokeObjectURL(userRecordingUrl.value);
-                } catch (_) {}
-              }
-              userRecordingUrl.value = URL.createObjectURL(blob);
-            }
-          }
-          mediaChunks = [];
-        };
-        mediaRecorder.start(250);
-      }
-      return mediaStream;
-    } catch (err) {
-      console.warn('Media capture unavailable:', err);
-      mediaRecorder = null;
-      return null;
-    } finally {
-      mediaCapturePromise = null;
-    }
-  })();
-  return mediaCapturePromise;
-}
-
-function ensureMediaCapture() {
-  if (!isListening.value) return;
-  startMediaCapture().catch(() => {});
-}
-
-function playUserRecording() {
-  if (!userRecordingUrl.value) return;
-  if (userRecAudio && !userRecAudio.paused) {
-    userRecAudio.pause();
-    isPlayingUserRec.value = false;
-    return;
-  }
-  speechService.stopSpeaking();
-  if (userRecAudio) {
-    try {
-      userRecAudio.pause();
-    } catch (_) {}
-  }
-  userRecAudio = new Audio(userRecordingUrl.value);
-  isPlayingUserRec.value = true;
-  userRecAudio.onended = () => {
-    isPlayingUserRec.value = false;
-  };
-  userRecAudio.onerror = () => {
-    isPlayingUserRec.value = false;
-  };
-  userRecAudio.play().catch(() => {
-    isPlayingUserRec.value = false;
-  });
 }
 
 function finalizePronunciation(finalText) {
@@ -1168,7 +871,6 @@ watch(
     deconstructResult.value = null;
     showTagInput.value = false;
     stopListening({ skipAnalyze: true });
-    clearUserRecording();
     cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
   }
 );
@@ -1176,8 +878,6 @@ watch(
 onUnmounted(() => {
   speechService.stopSpeaking();
   stopListening({ skipAnalyze: true });
-  clearUserRecording();
-  stopMediaCapture();
 });
 
 const speedOptions = [0.5, 0.7, 1.0, 1.2];
@@ -1217,7 +917,6 @@ function playSingleWord(thaiWord) {
   speechService.speakThai(thaiWord, { rate: Math.max(0.5, currentSpeed.value * 0.9), gender: store.userGender });
 }
 
-
 function handleSkip() {
   stopListening();
   cardPhase.value = 'practice';
@@ -1241,7 +940,6 @@ function handleRepeatInSession() {
 }
 
 function handleForgot() {
-  // Only available on recall confirmation cards
   if (cardPhase.value !== 'recall') return;
   stopListening();
   isLearningExpanded.value = false;
@@ -1260,7 +958,6 @@ function finishForgotWithoutCredit() {
   isTestingPronunciation.value = false;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
-  // No SRS credit — show again later in this session
   store.repeatInSession();
 }
 
@@ -1274,7 +971,6 @@ function enterRecallPhase() {
   recallOk.value = false;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
-  // Put at end of queue — do NOT open recall immediately
   store.queueForRecall();
   cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
 }
@@ -1295,7 +991,7 @@ function closePronunciationTest() {
   isTestingPronunciation.value = false;
 }
 
-async function startThaiListening() {
+function startThaiListening() {
   if (!isSpeechSupported.value || isListening.value || stoppingListen) return;
 
   stoppingListen = false;
@@ -1303,17 +999,7 @@ async function startThaiListening() {
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
   pendingFinalize = true;
-  firstSpeechAt = 0;
-  listenStartedAt = Date.now();
   didFinalizeThisListen = false;
-  // Keep prior voice memo on the card; only clear STT fields
-  if (mediaRecorder || mediaStream) {
-    try {
-      stopMediaCapture();
-    } catch (_) {}
-  }
-  mediaCapturePromise = null;
-  clearSttSilenceTimer();
   clearHardMaxTimer();
   hardMaxTimer = setTimeout(() => {
     if (isListening.value) stopListening({ skipAnalyze: false });
@@ -1322,10 +1008,7 @@ async function startThaiListening() {
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
     onResult: ({ text }) => {
-      if (text?.trim()) {
-        spokenThaiText.value = text;
-        if (!firstSpeechAt) firstSpeechAt = Date.now();
-      }
+      if (text?.trim()) spokenThaiText.value = text;
     },
     onError: (err) => {
       console.warn('Thai STT error:', err);
@@ -1334,20 +1017,13 @@ async function startThaiListening() {
       recognitionHandle = null;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
       if (finalText) spokenThaiText.value = finalText;
-      // If button already released, finalize here; otherwise wait for onPttUp → stopListening
       if (!pttHeld && pendingFinalize && finalText) {
         pendingFinalize = false;
         finalizePronunciation(finalText);
       }
     }
   });
-
-  // Do NOT open MediaRecorder here — getUserMedia steals the mic from SpeechRecognition.
-  // Own-voice memo is a separate push-to-talk after scoring («Записать себя»).
 }
-
-let pttHeld = false;
-let pttPointerId = null;
 
 function onPttDown(e) {
   if (!isSpeechSupported.value || stoppingListen) return;
@@ -1375,71 +1051,13 @@ function onPttUp(e) {
   }
 }
 
-function toggleThaiListening() {
-  if (isListening.value || pttHeld) {
-    onPttUp({ pointerId: pttPointerId });
-  } else {
-    onPttDown({ pointerId: 1, currentTarget: null });
-  }
-}
-
-let memoPttHeld = false;
-let memoPointerId = null;
-
-async function onMemoPttDown(e) {
-  if (isListening.value || isRecordingMemo.value) return;
-  memoPttHeld = true;
-  memoPointerId = e.pointerId ?? null;
-  try {
-    e.currentTarget?.setPointerCapture?.(e.pointerId);
-  } catch (_) {}
-  isRecordingMemo.value = true;
-  clearUserRecording();
-  if (mediaRecorder || mediaStream) {
-    try {
-      stopMediaCapture();
-    } catch (_) {}
-  }
-  mediaCapturePromise = null;
-  await startMediaCapture();
-}
-
-function onMemoPttUp(e) {
-  if (!memoPttHeld) return;
-  if (memoPointerId != null && e.pointerId != null && e.pointerId !== memoPointerId) return;
-  memoPttHeld = false;
-  memoPointerId = null;
-  try {
-    e.currentTarget?.releasePointerCapture?.(e.pointerId);
-  } catch (_) {}
-  isRecordingMemo.value = false;
-  stopVad();
-  try {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-  } catch (_) {}
-  setTimeout(() => {
-    if (mediaStream) {
-      try {
-        mediaStream.getTracks().forEach((t) => t.stop());
-      } catch (_) {}
-      mediaStream = null;
-    }
-    mediaRecorder = null;
-    mediaCapturePromise = null;
-  }, 400);
-}
-
 function stopListening({ skipAnalyze = false } = {}) {
   if (stoppingListen && !skipAnalyze) return;
   stoppingListen = true;
-  stopVad();
+  clearHardMaxTimer();
 
-  // Snapshot text BEFORE tearing down mic / recognition
   const textSnapshot = (spokenThaiText.value || '').trim();
-
-  if (skipAnalyze) {
-    pendingFinalize = false;
-  }
+  if (skipAnalyze) pendingFinalize = false;
 
   if (recognitionHandle?.stop) {
     recognitionHandle.stop();
@@ -1451,32 +1069,16 @@ function stopListening({ skipAnalyze = false } = {}) {
   pttHeld = false;
   pttPointerId = null;
 
-  try {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-  } catch (_) {}
-  // Delay killing tracks so recognition can flush final results
-  setTimeout(() => {
-    if (mediaStream) {
-      try {
-        mediaStream.getTracks().forEach((t) => t.stop());
-      } catch (_) {}
-      mediaStream = null;
-    }
-  }, 500);
-
   if (skipAnalyze) {
-    stopMediaCapture();
     stoppingListen = false;
     return;
   }
 
-  // Score immediately from what we already have (don't wait for flaky onEnd)
   if (pendingFinalize && textSnapshot) {
     pendingFinalize = false;
     finalizePronunciation(textSnapshot);
   }
 
-  // Late flush if onEnd adds more text
   setTimeout(() => {
     if (pendingFinalize) {
       pendingFinalize = false;

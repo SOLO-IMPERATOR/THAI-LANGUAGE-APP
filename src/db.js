@@ -28,8 +28,21 @@ db.version(3).stores({
   room_messages: '++id, roomId, senderId, timestamp'
 });
 
-/** Canonical phrases from SQLite API (filled during initDatabase). */
+/** Canonical phrases from API (filled during initDatabase). */
 export let INITIAL_PHRASES = [];
+
+/** Bump when phrase content / words_breakdown must refresh in IndexedDB. */
+const PHRASES_CONTENT_REV = 5;
+
+function hasPoorWordsBreakdown(phrases, sampleSize = 80) {
+  if (!phrases?.length) return true;
+  const sample = phrases.slice(0, sampleSize);
+  const poor = sample.filter((p) => {
+    const wb = p.words_breakdown || p.words || [];
+    return !Array.isArray(wb) || wb.length <= 1;
+  }).length;
+  return poor >= Math.max(3, Math.floor(sample.length * 0.25));
+}
 
 export async function initDatabase() {
   try {
@@ -62,10 +75,17 @@ export async function initDatabase() {
 
     const count = await db.phrases.count();
     const existingPhrases = count > 0 ? await db.phrases.toArray() : [];
-    
-    // Check if re-sync to canonical phrases is needed
-    const needsResync = count !== INITIAL_PHRASES.length ||
-      existingPhrases.some((p) => !p.female || !p.male || (p.russian && p.russian.includes('Полезная разговорная фраза')));
+    const revRow = await db.settings.get('phrasesContentRev');
+    const storedRev = revRow?.value;
+
+    // Re-sync when count/shape/content revision changes, or local breakdown is stale
+    const needsResync =
+      count !== INITIAL_PHRASES.length ||
+      storedRev !== PHRASES_CONTENT_REV ||
+      hasPoorWordsBreakdown(existingPhrases) ||
+      existingPhrases.some(
+        (p) => !p.female || !p.male || (p.russian && p.russian.includes('Полезная разговорная фраза'))
+      );
 
     if (count === 0 || needsResync) {
       // Map existing learning progress by Russian key to preserve SRS stats
@@ -99,7 +119,8 @@ export async function initDatabase() {
 
       await db.phrases.clear();
       await db.phrases.bulkAdd(canonical900);
-      console.log(`Synchronized database with ${canonical900.length} canonical phrases.`);
+      await db.settings.put({ key: 'phrasesContentRev', value: PHRASES_CONTENT_REV });
+      console.log(`Synchronized database with ${canonical900.length} canonical phrases (rev ${PHRASES_CONTENT_REV}).`);
     }
 
 

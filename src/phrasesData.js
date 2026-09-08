@@ -88,7 +88,17 @@ export function getGenderedPhrase(phrase, gender = 'male') {
   }
 
   // Adapt words breakdown if present (skip polite particles — they are not study words)
-  const baseWords = (phrase.words_breakdown || phrase.words || []).filter((w) => {
+  let rawWords = phrase.words_breakdown || phrase.words || [];
+  if (typeof rawWords === 'string') {
+    try {
+      rawWords = JSON.parse(rawWords);
+    } catch {
+      rawWords = [];
+    }
+  }
+  if (!Array.isArray(rawWords)) rawWords = [];
+
+  let baseWords = rawWords.filter((w) => {
     if (!w) return false;
     const thai = String(w.thai_hidden || w.thai || '').trim();
     const gloss = String(w.translation_ru || '').toLowerCase();
@@ -98,6 +108,23 @@ export function getGenderedPhrase(phrase, gender = 'male') {
     if (gloss.includes('вежливая частица')) return false;
     return true;
   });
+
+  // Fallback: split gendered transcription into word chips when DB breakdown is missing/stale
+  if (baseWords.length <= 1) {
+    const parts = String(chosenTr || '')
+      .replace(/\s+(?:кхра́п|кхрап|крап|кха̂|кха́|кха)$/i, '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (parts.length > 1) {
+      baseWords = parts.map((part) => ({
+        thai_hidden: '',
+        transcription_ru: part,
+        translation_ru: ''
+      }));
+    }
+  }
+
   const adaptedWords = baseWords.map((w) => {
     if (!w) return w;
     if (isFemale) {
