@@ -448,7 +448,7 @@ async function startApp() {
   }
 
   try {
-    await communityStore.initCommunity();
+    await communityStore.initCommunity(authStore.currentUser);
   } catch (err) {
     console.warn('Community init warning:', err);
   }

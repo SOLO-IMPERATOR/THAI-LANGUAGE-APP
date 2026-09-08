@@ -1,6 +1,6 @@
 /**
  * Gender helpers and canonical phrases loader.
- * Source of truth for phrases is SQLite via /api/phrases.
+ * Source of truth for phrases is MySQL via /api/phrases (PHP).
  */
 
 let cachedPhrases = [];
@@ -87,19 +87,20 @@ export function getGenderedPhrase(phrase, gender = 'male') {
     }
   }
 
-  // Adapt words breakdown if present
-  const baseWords = phrase.words_breakdown || phrase.words || [];
+  // Adapt words breakdown if present (skip polite particles — they are not study words)
+  const baseWords = (phrase.words_breakdown || phrase.words || []).filter((w) => {
+    if (!w) return false;
+    const thai = String(w.thai_hidden || w.thai || '').trim();
+    const gloss = String(w.translation_ru || '').toLowerCase();
+    if (!thai) return false;
+    if (thai === 'ครับ' || thai === 'ค่ะ' || thai === 'คะ') return false;
+    if (/ครับ\s*\/\s*ค่ะ/.test(thai)) return false;
+    if (gloss.includes('вежливая частица')) return false;
+    return true;
+  });
   const adaptedWords = baseWords.map((w) => {
     if (!w) return w;
     if (isFemale) {
-      if (w.thai_hidden === 'ครับ' || w.thai === 'ครับ') {
-        return {
-          thai_hidden: defaultFemaleParticle,
-          thai: defaultFemaleParticle,
-          transcription_ru: defaultFemaleTrParticle,
-          translation_ru: 'вежливая частица (ж.)'
-        };
-      }
       if (w.thai_hidden === 'ผม' || w.thai === 'ผม') {
         return {
           thai_hidden: 'ฉัน',
@@ -109,14 +110,6 @@ export function getGenderedPhrase(phrase, gender = 'male') {
         };
       }
     } else {
-      if (w.thai_hidden === 'ค่ะ' || w.thai_hidden === 'คะ' || w.thai === 'ค่ะ' || w.thai === 'คะ') {
-        return {
-          thai_hidden: 'ครับ',
-          thai: 'ครับ',
-          transcription_ru: 'кхра́п',
-          translation_ru: 'вежливая частица (м.)'
-        };
-      }
       if (w.thai_hidden === 'ฉัน' || w.thai === 'ฉัน') {
         return {
           thai_hidden: 'ผม',

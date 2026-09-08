@@ -11,3 +11,4 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/tts-cache/
+api/config.php

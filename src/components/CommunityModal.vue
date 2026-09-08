@@ -497,8 +497,68 @@
                 </p>
               </div>
             </div>
-            <div class="text-[11px] text-slate-400 font-semibold">
-              Участников: {{ (communityStore.activeRoom.memberIds || []).length }}
+            <div class="flex items-center gap-2">
+              <button
+                v-if="!communityStore.voiceEnabled"
+                type="button"
+                @click="toggleVoice"
+                class="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black cursor-pointer"
+              >
+                🎙 Голос
+              </button>
+              <template v-else>
+                <button
+                  type="button"
+                  @click="communityStore.setVoiceMuted(!communityStore.voiceMuted)"
+                  class="px-2.5 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-800 text-white text-[10px] font-black cursor-pointer"
+                >
+                  {{ communityStore.voiceMuted ? '🔇 Микрофон' : '🎤 Микрофон' }}
+                </button>
+                <button
+                  type="button"
+                  @click="toggleVoice"
+                  class="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black cursor-pointer"
+                >
+                  Выйти из голоса
+                </button>
+              </template>
+              <div class="text-[11px] text-slate-400 font-semibold text-right">
+                <div>Участников: {{ (communityStore.activeRoom.memberIds || []).length }}</div>
+                <div v-if="communityStore.voiceEnabled" class="text-emerald-600 font-bold">
+                  В эфире: {{ communityStore.voicePeers.length + 1 }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pending join requests for room creator -->
+          <div
+            v-if="isRoomCreator && (communityStore.activeRoom.pendingMemberIds || []).length"
+            class="mt-2 p-2 rounded-xl bg-amber-50 border border-amber-200 space-y-1"
+          >
+            <div class="text-[10px] font-black uppercase text-amber-800">Заявки на вход</div>
+            <div
+              v-for="pid in communityStore.activeRoom.pendingMemberIds"
+              :key="pid"
+              class="flex items-center justify-between gap-2 text-xs"
+            >
+              <span>{{ userNameById(pid) }}</span>
+              <div class="flex gap-1">
+                <button
+                  type="button"
+                  class="px-2 py-0.5 rounded-lg bg-emerald-600 text-white text-[10px] font-bold cursor-pointer"
+                  @click="communityStore.approveJoinRequest(communityStore.activeRoom.id, pid)"
+                >
+                  Принять
+                </button>
+                <button
+                  type="button"
+                  class="px-2 py-0.5 rounded-lg bg-slate-200 text-slate-700 text-[10px] font-bold cursor-pointer"
+                  @click="communityStore.rejectJoinRequest(communityStore.activeRoom.id, pid)"
+                >
+                  Отклонить
+                </button>
+              </div>
             </div>
           </div>
 
@@ -508,7 +568,7 @@
               v-for="msg in roomMessages"
               :key="msg.id"
               class="flex flex-col max-w-[85%]"
-              :class="msg.senderId === currentUserId ? 'ml-auto items-end' : 'mr-auto items-start'"
+              :class="String(msg.senderId) === String(currentUserId) ? 'ml-auto items-end' : 'mr-auto items-start'"
             >
               <span class="text-[10px] font-bold text-slate-500 px-1 mb-0.5">
                 {{ msg.senderName }}
@@ -517,7 +577,7 @@
               <div
                 class="p-3 rounded-2xl text-xs"
                 :class="
-                  msg.senderId === currentUserId
+                  String(msg.senderId) === String(currentUserId)
                     ? 'bg-indigo-600 text-white rounded-br-none shadow-sm'
                     : 'bg-slate-100 text-slate-900 rounded-bl-none'
                 "
@@ -864,11 +924,41 @@ const communityStore = useCommunityStore();
 const authStore = useAuthStore();
 
 const activeTab = computed(() => communityStore.activeTab);
-const currentUserId = computed(() => authStore.currentUser?.id || 0);
+const currentUserId = computed(() => String(authStore.currentUser?.id || ''));
 
 const noticeMessage = ref('');
 const newDirectMessageText = ref('');
 const newRoomMessageText = ref('');
+
+const isRoomCreator = computed(() => {
+  const room = communityStore.activeRoom;
+  if (!room || !currentUserId.value) return false;
+  return String(room.creatorId) === String(currentUserId.value);
+});
+
+function userNameById(uid) {
+  const u = communityStore.communityUsers.find((x) => String(x.id) === String(uid));
+  if (!u) return `ID ${uid}`;
+  return `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email || `ID ${uid}`;
+}
+
+async function toggleVoice() {
+  if (!authStore.currentUser) {
+    authStore.openAuth('login');
+    return;
+  }
+  if (communityStore.voiceEnabled) {
+    await communityStore.stopVoiceChat();
+    noticeMessage.value = 'Голосовой чат выключен.';
+    return;
+  }
+  const res = await communityStore.startVoiceChat(authStore.currentUser);
+  if (res.ok) {
+    noticeMessage.value = 'Вы в голосовом чате комнаты. Разрешите микрофон в браузере.';
+  } else {
+    noticeMessage.value = res.error || 'Не удалось включить голос.';
+  }
+}
 
 // Create Room form state
 const showCreateRoom = ref(false);
@@ -902,19 +992,21 @@ const currentUserRank = computed(() => {
 });
 
 function isCurrentUser(uid) {
-  return currentUserId.value === uid;
+  return String(currentUserId.value) === String(uid);
 }
 
 function isFriend(uid) {
-  return communityStore.friendIds(currentUserId.value).includes(uid);
+  return communityStore.friendIds(currentUserId.value).includes(String(uid));
 }
 
 function hasPendingRequest(uid) {
+  const me = String(currentUserId.value);
+  const other = String(uid);
   return communityStore.friendRequests.some(
     (r) =>
       r.status === 'pending' &&
-      ((r.fromUserId === currentUserId.value && r.toUserId === uid) ||
-        (r.toUserId === currentUserId.value && r.fromUserId === uid))
+      ((String(r.fromUserId) === me && String(r.toUserId) === other) ||
+        (String(r.toUserId) === me && String(r.fromUserId) === other))
   );
 }
 
@@ -928,12 +1020,12 @@ const incomingCount = computed(() => incomingFriendRequests.value.length);
 const friendMessages = computed(() => communityStore.currentFriendMessages(currentUserId.value));
 const roomMessages = computed(() => communityStore.currentRoomMessages);
 
-function sendFriendRequest(targetUser) {
+async function sendFriendRequest(targetUser) {
   if (!currentUserId.value) {
     authStore.openAuth('login');
     return;
   }
-  const res = communityStore.sendFriendRequest(currentUserId.value, targetUser.id);
+  const res = await communityStore.sendFriendRequest(currentUserId.value, targetUser.id);
   if (res.success) {
     noticeMessage.value = `Заявка в друзья пользователю ${targetUser.firstName} отправлена!`;
   } else {
@@ -941,16 +1033,16 @@ function sendFriendRequest(targetUser) {
   }
 }
 
-function handleCancelFriendRequest(targetUserId) {
+async function handleCancelFriendRequest(targetUserId) {
   if (!currentUserId.value) return;
-  const res = communityStore.cancelFriendRequest(currentUserId.value, targetUserId);
+  const res = await communityStore.cancelFriendRequest(currentUserId.value, targetUserId);
   if (res.success) {
     noticeMessage.value = 'Заявка в друзья успешно отменена.';
   }
 }
 
-function respondRequest(requestId, status) {
-  communityStore.respondFriendRequest(requestId, status);
+async function respondRequest(requestId, status) {
+  await communityStore.respondFriendRequest(requestId, status);
   if (status === 'accepted') {
     noticeMessage.value = 'Заявка принята! Теперь вы друзья и можете общаться.';
   }
@@ -960,21 +1052,12 @@ function openDirectChat(friend) {
   communityStore.openDirectChat(friend);
 }
 
-function handleSendDirectMessage() {
-  if (!newDirectMessageText.value.trim() || !communityStore.activeChatFriend) return;
-  communityStore.sendDirectMessage(
-    currentUserId.value,
-    communityStore.activeChatFriend.id,
-    newDirectMessageText.value.trim()
-  );
-  newDirectMessageText.value = '';
-}
-
 function isRoomMember(room) {
-  return Array.isArray(room.memberIds) && room.memberIds.includes(currentUserId.value);
+  const me = String(currentUserId.value);
+  return Array.isArray(room.memberIds) && room.memberIds.some((id) => String(id) === me);
 }
 
-function handleJoinRoom(room) {
+async function handleJoinRoom(room) {
   if (!currentUserId.value) {
     authStore.openAuth('login');
     return;
@@ -985,17 +1068,19 @@ function handleJoinRoom(room) {
     return;
   }
 
-  const res = communityStore.requestJoinRoom(room.id, currentUserId.value);
+  const res = await communityStore.requestJoinRoom(room.id, currentUserId.value);
   if (res.joined) {
     communityStore.openRoom(room);
-  } else {
+  } else if (res.ok) {
     noticeMessage.value = 'Запрос на вступление в комнату отправлен создателю.';
+  } else {
+    noticeMessage.value = res.error || 'Не удалось вступить в комнату.';
   }
 }
 
-function handleCreateRoom() {
+async function handleCreateRoom() {
   if (!newRoomTitle.value.trim()) return;
-  const room = communityStore.createRoom({
+  const room = await communityStore.createRoom({
     title: newRoomTitle.value.trim(),
     description: newRoomDesc.value.trim() || 'Практика тайского языка',
     creatorId: currentUserId.value,
@@ -1008,18 +1093,29 @@ function handleCreateRoom() {
   newRoomTitle.value = '';
   newRoomDesc.value = '';
   newRoomRequireApproval.value = false;
-  communityStore.openRoom(room);
+  if (room) communityStore.openRoom(room);
+  else noticeMessage.value = 'Не удалось создать комнату.';
 }
 
-function handleSendRoomMessage() {
+async function handleSendRoomMessage() {
   if (!newRoomMessageText.value.trim() || !communityStore.activeRoom) return;
-  communityStore.sendRoomMessage(
+  await communityStore.sendRoomMessage(
     communityStore.activeRoom.id,
     currentUserId.value,
     authStore.userFullName,
     newRoomMessageText.value.trim()
   );
   newRoomMessageText.value = '';
+}
+
+async function handleSendDirectMessage() {
+  if (!newDirectMessageText.value.trim() || !communityStore.activeChatFriend) return;
+  await communityStore.sendDirectMessage(
+    currentUserId.value,
+    communityStore.activeChatFriend.id,
+    newDirectMessageText.value.trim()
+  );
+  newDirectMessageText.value = '';
 }
 
 function formatTime(ts) {

@@ -688,6 +688,13 @@ export const useLearningStore = defineStore('learning', {
       const existingWords = await db.dictionary_words.toArray();
 
       for (const word of phrase.words_breakdown) {
+        const thai = String(word.thai_hidden || word.thai || '').trim();
+        const gloss = String(word.translation_ru || '').toLowerCase();
+        if (!thai) continue;
+        if (thai === 'ครับ' || thai === 'ค่ะ' || thai === 'คะ') continue;
+        if (/ครับ\s*\/\s*ค่ะ/.test(thai)) continue;
+        if (gloss.includes('вежливая частица')) continue;
+
         const alreadyExists = existingWords.some(
           (w) => w.thai_hidden === word.thai_hidden || w.transcription_ru.toLowerCase() === word.transcription_ru.toLowerCase()
         );

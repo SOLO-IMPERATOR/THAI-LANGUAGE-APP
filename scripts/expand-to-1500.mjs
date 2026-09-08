@@ -7,10 +7,19 @@ import { fileURLToPath } from 'url';
 import { EXTRA_PHRASES, assertExtraCount } from './extra_phrases_600.mjs';
 import { TOPUP_PHRASES } from './extra_phrases_topup.mjs';
 
+import {
+  buildLexicon,
+  buildWordsBreakdown,
+  stripPoliteParticleThai,
+  stripPoliteParticleTr,
+} from './thaiWordBreakdown.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, '../data');
 const phrasesPath = path.join(dataDir, 'thai_phrases_database.json');
 const wordsPath = path.join(dataDir, 'words_dictionary.json');
+
+const sharedLexicon = buildLexicon([]);
 
 function cleanRussianText(text) {
   return String(text || '')
@@ -45,8 +54,8 @@ function generateGenderedVariants(item) {
 
   const isQ = isQuestionPhrase(thai, ru);
 
-  let baseThai = thai.replace(/\s*(?:ครับ|ค่ะ|คะ)\s*$/g, '').trim();
-  let baseRuTr = ru_tr.replace(/\s*(?:кхра́п|кхрап|кхап|кха̂|кха́|кха)\s*$/gi, '').trim();
+  let baseThai = stripPoliteParticleThai(thai);
+  let baseRuTr = stripPoliteParticleTr(ru_tr);
 
   let maleThai = baseThai;
   let maleRuTr = baseRuTr;
@@ -69,18 +78,7 @@ function generateGenderedVariants(item) {
   const finalFemaleThai = `${femaleThai}${femaleParticleThai}`;
   const finalFemaleRuTr = `${femaleRuTr} ${femaleParticleRuTr}`;
 
-  const wordsBreakdown = [
-    {
-      thai_hidden: baseThai,
-      transcription_ru: baseRuTr,
-      translation_ru: ru,
-    },
-    {
-      thai_hidden: 'ครับ / ค่ะ',
-      transcription_ru: 'кхра́п (м.) / кха̂ (ж.)',
-      translation_ru: 'вежливая частица',
-    },
-  ];
+  const wordsBreakdown = buildWordsBreakdown(baseThai, baseRuTr, ru, sharedLexicon);
 
   return {
     russian: ru,
@@ -167,7 +165,7 @@ function collectWords(phrases) {
     }
     for (const w of p.words_breakdown || []) {
       const thai = (w.thai_hidden || w.thai || '').trim();
-      if (!thai || /ครับ\s*\/\s*ค่ะ/.test(thai)) continue;
+      if (!thai || /ครับ\s*\/\s*ค่ะ/.test(thai) || /^(ครับ|ค่ะ|คะ)$/.test(thai)) continue;
       if (!map.has(thai)) {
         map.set(thai, {
           thai,

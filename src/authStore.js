@@ -341,6 +341,13 @@ export const useAuthStore = defineStore('auth', {
         console.warn('Could not save user to storage:', e);
       }
       this.isAuthModalOpen = false;
+      import('./communityStore.js')
+        .then(({ useCommunityStore }) => {
+          const community = useCommunityStore();
+          community.syncCurrentUser(user);
+          community.initCommunity(user);
+        })
+        .catch(() => {});
     },
 
     logout() {
@@ -354,6 +361,14 @@ export const useAuthStore = defineStore('auth', {
         const learningStore = useLearningStore();
         learningStore.resetLocalSrsToCanonical();
       } catch (e) {}
+      import('./communityStore.js')
+        .then(({ useCommunityStore }) => {
+          const community = useCommunityStore();
+          if (community._pollTimer) clearInterval(community._pollTimer);
+          community.pollUserId = null;
+          community.stopVoiceChat();
+        })
+        .catch(() => {});
       this.isProfileModalOpen = false;
       this.authMode = 'login';
       this.isAuthModalOpen = true;

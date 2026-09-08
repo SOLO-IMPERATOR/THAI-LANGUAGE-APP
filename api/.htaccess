@@ -1,0 +1,22 @@
+# Deny direct access to PHP helpers / secrets.
+# Public HTTP entry: index.php only (seed via CLI or POST /api/seed → index).
+
+<FilesMatch "^(config|bootstrap|repositories|tts|seed_runner|seed|router-dev|social)\.php$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+<FilesMatch "^(config\.example\.php|schema\.sql|schema_social\.sql)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>

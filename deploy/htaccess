@@ -1,0 +1,19 @@
+RewriteEngine On
+
+# Force HTTPS when behind SpaceWeb proxy
+SetEnvIf X-Forwarded-Proto https SERVER_PORT=443
+SetEnvIf X-Forwarded-Proto https HTTPS=on
+RewriteCond %{HTTP:HTTPS} !=on [NC]
+RewriteRule ^(.*)$ https://%{SERVER_NAME}%{REQUEST_URI} [R=301,L]
+
+# PHP API front controller (no Node process)
+RewriteRule ^api/index\.php$ - [L]
+RewriteRule ^api(?:/.*)?$ api/index.php [L,QSA]
+
+# SPA fallback
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+RewriteRule ^ index.html [L]
+
+Options -Indexes

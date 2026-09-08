@@ -2,9 +2,9 @@
 
 Официальная структурированная база данных для репозитория **Тайский фразовик (Thai Spoken PWA)**.
 
-## Источник данных (runtime)
+## Источник данных (runtime / production)
 
-Сервер использует **SQLite**: файл `data/app.db`.
+**Production (SpaceWeb):** MySQL через PHP API в `api/`.
 
 - таблица `phrases` — разговорные фразы
 - таблица `words` — словарь
@@ -12,23 +12,29 @@
 - таблица `user_phrase_progress` — SRS-прогресс пользователя по фразам
 - таблица `user_review_history` — история ответов (success/failure)
 
-Миграция из JSON:
+Схема: `api/schema.sql`  
+Сиды из JSON:
 
 ```bash
-npm run migrate:sqlite
+# после настройки api/config.php
+php api/seed.php --force
+# или
+npm run seed:mysql -- --force
 ```
 
-JSON-файлы ниже остаются как исходники для повторной миграции.
+Подробности деплоя: `deploy/README.md`.
+
+**Local optional:** старый SQLite-путь через Node (`npm run migrate:sqlite`, `server.ts`) ещё можно использовать для разработки, но прод — MySQL + PHP.
 
 ## Содержимое репозитория
-- `app.db` — runtime SQLite (создаётся миграцией, обычно не коммитится)
-- `thai_phrases_database.json` — исходник ~1500 разговорных фраз для миграции
-- `words_dictionary.json` — исходник словаря для миграции
+- `thai_phrases_database.json` — исходник ~1500 разговорных фраз
+- `words_dictionary.json` — исходник словаря
+- `app.db` — устаревший локальный SQLite (не для продакшена)
 
 Расширение набора фраз:
 
 ```bash
-npm run expand:phrases && npm run migrate:sqlite
+npm run expand:phrases && php api/seed.php --force
 ```
 
 ## Структура фразы

@@ -115,6 +115,12 @@ export default defineConfig(() => {
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      proxy: {
+        '/api': {
+          target: process.env.PHP_API_URL || 'http://127.0.0.1:8080',
+          changeOrigin: true,
+        },
+      },
     },
   };
 });
