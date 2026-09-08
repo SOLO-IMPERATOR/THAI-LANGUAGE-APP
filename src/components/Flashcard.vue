@@ -826,8 +826,10 @@ let hardMaxTimer = null;
 let didFinalizeThisListen = false;
 let pttHeld = false;
 let pttPointerId = null;
+let micCooldownUntil = 0;
 
 const MAX_LISTEN_MS = 18000;
+const MIC_COOLDOWN_MS = 500;
 
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
@@ -999,6 +1001,7 @@ function closePronunciationTest() {
 
 function startThaiListening() {
   if (!isSpeechSupported.value || isListening.value || stoppingListen) return;
+  if (Date.now() < micCooldownUntil) return;
 
   stoppingListen = false;
   isListening.value = true;
@@ -1011,6 +1014,8 @@ function startThaiListening() {
     if (isListening.value) stopListening({ skipAnalyze: false });
   }, MAX_LISTEN_MS);
 
+  speechService.abortRecognitionHard();
+
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
     keepAlive: true,
@@ -1021,11 +1026,12 @@ function startThaiListening() {
     onError: (err) => {
       console.warn('Thai STT error:', err);
     },
-    onEnd: (finalTranscript) => {
+    onEnd: (finalTranscript, meta = {}) => {
       recognitionHandle = null;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
       if (finalText) spokenThaiText.value = finalText;
-      if (pttHeld && !stoppingListen) {
+      // keepAlive may still be holding — only clear UI when session truly ended
+      if (pttHeld && !stoppingListen && !meta?.intentional) {
         isListening.value = true;
         return;
       }
@@ -1040,6 +1046,7 @@ function startThaiListening() {
 
 function onPttDown(e) {
   if (!isSpeechSupported.value || stoppingListen) return;
+  if (Date.now() < micCooldownUntil) return;
   if (pttHeld) return;
   pttHeld = true;
   pttPointerId = e.pointerId ?? null;
@@ -1071,15 +1078,22 @@ function stopListening({ skipAnalyze = false } = {}) {
   const textSnapshot = (spokenThaiText.value || '').trim();
   if (skipAnalyze) pendingFinalize = false;
 
+  pttHeld = false;
+  pttPointerId = null;
+  isListening.value = false;
+
   if (recognitionHandle?.stop) {
     recognitionHandle.stop();
     recognitionHandle = null;
+  } else if (recognitionHandle?.abort) {
+    recognitionHandle.abort();
+    recognitionHandle = null;
   } else {
-    speechService.stopRecognition();
+    speechService.abortRecognitionHard();
   }
-  isListening.value = false;
-  pttHeld = false;
-  pttPointerId = null;
+
+  // Prevent rapid re-open while Chrome still holds the previous mic session
+  micCooldownUntil = Date.now() + MIC_COOLDOWN_MS;
 
   if (skipAnalyze) {
     stoppingListen = false;
@@ -1097,7 +1111,7 @@ function stopListening({ skipAnalyze = false } = {}) {
       const text = (spokenThaiText.value || textSnapshot || '').trim();
       if (text) {
         finalizePronunciation(text);
-      } else {
+      } else if (!didFinalizeThisListen) {
         pronunciationAnalysis.value = {
           score: 0,
           verdict: 'unclear',
@@ -1108,7 +1122,7 @@ function stopListening({ skipAnalyze = false } = {}) {
       }
     }
     stoppingListen = false;
-  }, 450);
+  }, 500);
 }
 
 async function creditRecallWithoutSpeech() {

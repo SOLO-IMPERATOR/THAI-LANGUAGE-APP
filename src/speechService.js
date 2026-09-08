@@ -18,6 +18,10 @@ class SpeechService {
     this._objectUrl = null;
     this._ttsRequestId = 0;
     this.preferServerTts = true;
+    this._recognitionWantOpen = false;
+    this._sttGeneration = 0;
+    this._sttRestartTimer = null;
+    this._sttRestartsThisHold = 0;
 
     if (this.synth) {
       this.initVoices();
@@ -320,12 +324,8 @@ class SpeechService {
 
   /**
    * Start Thai speech recognition (STT) in 'th-TH'.
-   * Uses continuous mode so short pauses mid-phrase do not end early.
-   * Call stop() when the user is done — scoring should happen only then.
-   *
-   * keepAlive + shouldContinue: mobile browsers often kill recognition after ~1s
-   * of silence; while the caller still wants the mic (push-to-talk held), restart
-   * the same session so hold-to-talk actually lasts until release.
+   * keepAlive: if the browser ends the session while PTT is held, start a *new*
+   * SpeechRecognition instance (reusing one object leaks mic state in Chrome).
    */
   startThaiRecognition({
     onResult,
@@ -341,172 +341,204 @@ class SpeechService {
       return null;
     }
 
-    this.stopRecognition({ silent: true });
-
-    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRec();
-
-    recognition.lang = 'th-TH';
-    recognition.interimResults = true;
-    recognition.continuous = !!continuous;
-    recognition.maxAlternatives = 3;
+    this.abortRecognitionHard();
+    this._sttGeneration += 1;
+    const generation = this._sttGeneration;
+    this._recognitionWantOpen = true;
+    this._sttRestartsThisHold = 0;
 
     let finalTranscript = '';
     let endedIntentionally = false;
-    let restartTimer = null;
-    this._recognitionWantOpen = true;
-
-    const clearRestartTimer = () => {
-      if (restartTimer) {
-        clearTimeout(restartTimer);
-        restartTimer = null;
-      }
-    };
+    const MAX_RESTARTS_PER_HOLD = 6;
 
     const stillWantOpen = () =>
       keepAlive &&
       this._recognitionWantOpen &&
       !endedIntentionally &&
+      generation === this._sttGeneration &&
+      this._sttRestartsThisHold < MAX_RESTARTS_PER_HOLD &&
       (typeof shouldContinue !== 'function' || !!shouldContinue());
 
-    recognition.onstart = () => {
-      this.isListening = true;
-    };
-
-    recognition.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const item = event.results[i];
-        if (item.isFinal) {
-          finalTranscript += item[0].transcript;
-        } else {
-          interim += item[0].transcript;
-        }
-      }
-
-      if (onResult) {
-        onResult({
-          final: finalTranscript.trim(),
-          interim: interim.trim(),
-          text: (finalTranscript + ' ' + interim).trim(),
-          isFinalSegment: !interim,
-          complete: false
-        });
-      }
-    };
-
-    recognition.onerror = (event) => {
-      const errName = event?.error || '';
-      // no-speech / aborted: onend will keep-alive if PTT still held
-      if (errName === 'no-speech' || errName === 'aborted') {
-        return;
-      }
-      // Fatal for this attempt — allow keep-alive restart via onend unless we close wantOpen
-      if (errName === 'not-allowed' || errName === 'service-not-allowed') {
-        this._recognitionWantOpen = false;
-        endedIntentionally = true;
-        clearRestartTimer();
-        this.isListening = false;
-        this.activeRecognition = null;
-        if (onError) onError(event);
-        return;
-      }
-      if (onError) onError(event);
-    };
-
-    recognition.onend = () => {
-      this.activeRecognition = null;
+    const finish = (intentional) => {
+      if (generation !== this._sttGeneration) return;
+      this._recognitionWantOpen = false;
       this.isListening = false;
+      this.activeRecognition = null;
+      if (onEnd) onEnd(finalTranscript.trim(), { intentional });
+    };
 
-      if (stillWantOpen()) {
-        clearRestartTimer();
-        // Restart quickly so hold-to-talk survives browser silence timeouts
-        restartTimer = setTimeout(() => {
-          restartTimer = null;
-          if (!stillWantOpen()) {
-            this._recognitionWantOpen = false;
-            if (onEnd) onEnd(finalTranscript.trim(), { intentional: endedIntentionally });
+    const bindAndStart = () => {
+      if (generation !== this._sttGeneration || !this._recognitionWantOpen || endedIntentionally) {
+        return;
+      }
+
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const recognition = new SpeechRec();
+      recognition.lang = 'th-TH';
+      recognition.interimResults = true;
+      recognition.continuous = !!continuous;
+      recognition.maxAlternatives = 3;
+
+      recognition.onstart = () => {
+        if (generation !== this._sttGeneration) return;
+        this.isListening = true;
+        this.activeRecognition = recognition;
+      };
+
+      recognition.onresult = (event) => {
+        if (generation !== this._sttGeneration) return;
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            finalTranscript += item[0].transcript;
+          } else {
+            interim += item[0].transcript;
+          }
+        }
+        if (onResult) {
+          onResult({
+            final: finalTranscript.trim(),
+            interim: interim.trim(),
+            text: (finalTranscript + ' ' + interim).trim(),
+            isFinalSegment: !interim,
+            complete: false
+          });
+        }
+      };
+
+      recognition.onerror = (event) => {
+        if (generation !== this._sttGeneration) return;
+        const errName = event?.error || '';
+        if (errName === 'no-speech' || errName === 'aborted') return;
+        if (errName === 'not-allowed' || errName === 'service-not-allowed') {
+          endedIntentionally = true;
+          this._recognitionWantOpen = false;
+          if (onError) onError(event);
+          return;
+        }
+        // "network" / busy often recover on a fresh instance after a short pause
+        if (onError) onError(event);
+      };
+
+      recognition.onend = () => {
+        if (generation !== this._sttGeneration) return;
+        if (this.activeRecognition === recognition) {
+          this.activeRecognition = null;
+        }
+        this.isListening = false;
+
+        if (stillWantOpen()) {
+          this._sttRestartsThisHold += 1;
+          // Give Chrome time to release the mic before opening a new session
+          this._sttRestartTimer = setTimeout(() => {
+            this._sttRestartTimer = null;
+            if (!stillWantOpen()) {
+              finish(endedIntentionally);
+              return;
+            }
+            bindAndStart();
+          }, 220);
+          return;
+        }
+
+        finish(endedIntentionally);
+      };
+
+      try {
+        recognition.start();
+        this.activeRecognition = recognition;
+      } catch (e) {
+        // InvalidStateError: previous session still closing — retry once
+        this._sttRestartTimer = setTimeout(() => {
+          this._sttRestartTimer = null;
+          if (generation !== this._sttGeneration || endedIntentionally || !this._recognitionWantOpen) {
+            finish(endedIntentionally);
             return;
           }
           try {
-            recognition.start();
-            this.activeRecognition = recognition;
-            this.isListening = true;
-          } catch (err) {
-            // Rare race: try once more shortly
-            restartTimer = setTimeout(() => {
-              restartTimer = null;
-              if (!stillWantOpen()) {
-                this._recognitionWantOpen = false;
-                if (onEnd) onEnd(finalTranscript.trim(), { intentional: endedIntentionally });
-                return;
-              }
-              try {
-                recognition.start();
-                this.activeRecognition = recognition;
-                this.isListening = true;
-              } catch (err2) {
-                this._recognitionWantOpen = false;
-                if (onError) onError(err2);
-                if (onEnd) onEnd(finalTranscript.trim(), { intentional: false });
-              }
-            }, 120);
+            bindAndStart();
+          } catch (err2) {
+            if (onError) onError(err2);
+            finish(false);
           }
-        }, 40);
-        return;
+        }, 280);
       }
-
-      clearRestartTimer();
-      this._recognitionWantOpen = false;
-      if (onEnd) onEnd(finalTranscript.trim(), { intentional: endedIntentionally });
     };
 
-    try {
-      recognition.start();
-      this.activeRecognition = recognition;
-    } catch (e) {
-      clearRestartTimer();
-      this.isListening = false;
-      this.activeRecognition = null;
-      this._recognitionWantOpen = false;
-      if (onError) onError(e);
-      return null;
-    }
+    bindAndStart();
 
     return {
       stop: () => {
         endedIntentionally = true;
         this._recognitionWantOpen = false;
-        clearRestartTimer();
-        this.stopRecognition();
+        // Bump generation so any late onend/restart is ignored
+        if (generation === this._sttGeneration) {
+          this._sttGeneration += 1;
+        }
+        this.abortRecognitionHard();
+        if (onEnd) onEnd(finalTranscript.trim(), { intentional: true });
       },
       abort: () => {
         endedIntentionally = true;
         this._recognitionWantOpen = false;
-        clearRestartTimer();
-        this.stopRecognition({ silent: true });
+        if (generation === this._sttGeneration) {
+          this._sttGeneration += 1;
+        }
+        this.abortRecognitionHard();
       }
     };
   }
 
-  stopRecognition({ silent = false } = {}) {
+  /** Hard-close mic/recognition: clear timers, drop handlers, abort. */
+  abortRecognitionHard() {
+    if (this._sttRestartTimer) {
+      clearTimeout(this._sttRestartTimer);
+      this._sttRestartTimer = null;
+    }
     this._recognitionWantOpen = false;
+    const rec = this.activeRecognition;
+    this.activeRecognition = null;
+    this.isListening = false;
+    if (!rec) return;
+    try {
+      rec.onstart = null;
+      rec.onresult = null;
+      rec.onerror = null;
+      rec.onend = null;
+    } catch (_) {}
+    try {
+      if (typeof rec.abort === 'function') rec.abort();
+      else if (typeof rec.stop === 'function') rec.stop();
+    } catch (_) {
+      try {
+        rec.stop?.();
+      } catch (_) {}
+    }
+  }
+
+  stopRecognition({ silent = false } = {}) {
+    if (silent) {
+      this.abortRecognitionHard();
+      return;
+    }
+    this._recognitionWantOpen = false;
+    if (this._sttRestartTimer) {
+      clearTimeout(this._sttRestartTimer);
+      this._sttRestartTimer = null;
+    }
     const rec = this.activeRecognition;
     if (rec) {
       try {
-        // Prefer stop() so final results + onend still fire (abort drops them)
-        if (!silent && typeof rec.stop === 'function') {
+        if (typeof rec.stop === 'function') {
           rec.stop();
         } else {
-          rec.onend = null;
-          rec.onerror = null;
-          rec.onresult = null;
-          rec.abort();
+          this.abortRecognitionHard();
+          return;
         }
       } catch {
-        try {
-          rec.abort();
-        } catch (_) {}
+        this.abortRecognitionHard();
+        return;
       }
       this.activeRecognition = null;
     }
