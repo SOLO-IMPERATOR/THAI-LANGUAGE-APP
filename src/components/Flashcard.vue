@@ -437,7 +437,7 @@
                 type="button"
                 class="w-full sm:flex-1 py-3 px-4 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold uppercase tracking-wider transition shadow-md shadow-indigo-200 active:scale-95 cursor-pointer flex items-center justify-center gap-2"
               >
-                <span>✓ Запомнил — к припоминанию</span>
+                <span>✓ Запомнил</span>
               </button>
             <button
               @click="handleRepeatInSession"
@@ -610,7 +610,7 @@
                 type="button"
                 class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold uppercase tracking-wider shadow-md shadow-indigo-200 transition active:scale-95 ml-auto"
               >
-                <span>К припоминанию</span>
+                <span>Запомнил</span>
                 <span class="ml-1">→</span>
               </button>
             </div>
