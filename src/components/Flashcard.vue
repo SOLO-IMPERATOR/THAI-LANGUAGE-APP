@@ -200,7 +200,7 @@
                 </svg>
               </button>
               <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Слушаю… остановится после паузы' : 'или произнесите фразу целиком (≥ 60%)' }}
+                {{ isListening ? 'Слушаю… стоп после тишины ~1.5 с' : 'или произнесите фразу целиком (≥ 60%)' }}
               </span>
             </div>
 
@@ -516,7 +516,7 @@
             </button>
 
             <span class="text-xs font-bold mt-2 text-slate-700">
-              {{ isListening ? 'Слушаю… после паузы запись остановится сама' : 'Нажмите микрофон и произнесите фразу целиком' }}
+              {{ isListening ? 'Слушаю… остановится сама, когда замолчите (~1.5 с)' : 'Нажмите микрофон и произнесите фразу целиком' }}
             </span>
           </div>
 
@@ -843,34 +843,99 @@ let mediaChunks = [];
 let userRecAudio = null;
 let recognitionHandle = null;
 let pendingFinalize = false;
-let silenceTimer = null;
 let firstSpeechAt = 0;
-let lastSpeechAt = 0;
+let listenStartedAt = 0;
 
-const SILENCE_STOP_MS = 2000; // auto-stop after quiet pause
-const MIN_UTTERANCE_MS = 1000; // don't cut off too early mid-phrase
+let audioCtx = null;
+let analyserNode = null;
+let vadRaf = null;
+let speechHeard = false;
+let silenceStartedAt = 0;
+let stoppingListen = false;
 
-function clearSilenceTimer() {
-  if (silenceTimer) {
-    clearTimeout(silenceTimer);
-    silenceTimer = null;
+const SILENCE_STOP_MS = 1400;
+const MIN_UTTERANCE_MS = 900;
+const MAX_LISTEN_MS = 18000;
+const RMS_SPEECH = 0.035;
+const RMS_SILENCE = 0.022;
+
+function stopVad() {
+  if (vadRaf) {
+    cancelAnimationFrame(vadRaf);
+    vadRaf = null;
+  }
+  analyserNode = null;
+  if (audioCtx) {
+    try {
+      audioCtx.close();
+    } catch (_) {}
+    audioCtx = null;
   }
 }
 
-function scheduleAutoStop() {
-  clearSilenceTimer();
-  silenceTimer = setTimeout(() => {
-    silenceTimer = null;
-    if (!isListening.value) return;
-    const spokenFor = Date.now() - (firstSpeechAt || Date.now());
-    if (!spokenThaiText.value.trim()) return;
-    if (spokenFor < MIN_UTTERANCE_MS) {
-      // Still too early — wait another silence window
-      scheduleAutoStop();
-      return;
-    }
-    stopListening({ skipAnalyze: false });
-  }, SILENCE_STOP_MS);
+function measureRms(analyser) {
+  const buf = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(buf);
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const v = (buf[i] - 128) / 128;
+    sum += v * v;
+  }
+  return Math.sqrt(sum / buf.length);
+}
+
+function startVad(stream) {
+  stopVad();
+  speechHeard = false;
+  silenceStartedAt = 0;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx = new Ctx();
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyserNode = audioCtx.createAnalyser();
+    analyserNode.fftSize = 2048;
+    analyserNode.smoothingTimeConstant = 0.3;
+    source.connect(analyserNode);
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+
+    const tick = () => {
+      if (!isListening.value || !analyserNode || stoppingListen) {
+        vadRaf = null;
+        return;
+      }
+      const rms = measureRms(analyserNode);
+      const now = Date.now();
+
+      if (rms >= RMS_SPEECH) {
+        if (!speechHeard) {
+          speechHeard = true;
+          firstSpeechAt = now;
+        }
+        silenceStartedAt = 0;
+      } else if (speechHeard && rms <= RMS_SILENCE) {
+        if (!silenceStartedAt) silenceStartedAt = now;
+        const silentFor = now - silenceStartedAt;
+        const spokenFor = now - firstSpeechAt;
+        if (silentFor >= SILENCE_STOP_MS && spokenFor >= MIN_UTTERANCE_MS) {
+          stopListening({ skipAnalyze: false });
+          return;
+        }
+      } else if (speechHeard) {
+        // Between thresholds — don't reset silence aggressively
+      }
+
+      if (now - listenStartedAt >= MAX_LISTEN_MS) {
+        stopListening({ skipAnalyze: false });
+        return;
+      }
+
+      vadRaf = requestAnimationFrame(tick);
+    };
+    vadRaf = requestAnimationFrame(tick);
+  } catch (err) {
+    console.warn('VAD unavailable:', err);
+  }
 }
 
 function clearUserRecording() {
@@ -891,6 +956,7 @@ function clearUserRecording() {
 }
 
 function stopMediaCapture() {
+  stopVad();
   try {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
@@ -908,37 +974,51 @@ function stopMediaCapture() {
 async function startMediaCapture() {
   clearUserRecording();
   mediaChunks = [];
-  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-    return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return null;
   }
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/mp4')
-        ? 'audio/mp4'
-        : '';
-    mediaRecorder = mime ? new MediaRecorder(mediaStream, { mimeType: mime }) : new MediaRecorder(mediaStream);
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) mediaChunks.push(e.data);
-    };
-    mediaRecorder.onstop = () => {
-      if (!mediaChunks.length) return;
-      const blob = new Blob(mediaChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
-      clearUserRecording();
-      userRecordingUrl.value = URL.createObjectURL(blob);
-      mediaChunks = [];
-      if (mediaStream) {
-        try {
-          mediaStream.getTracks().forEach((t) => t.stop());
-        } catch (_) {}
-        mediaStream = null;
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
       }
-    };
-    mediaRecorder.start(200);
+    });
+    startVad(mediaStream);
+
+    if (typeof MediaRecorder !== 'undefined') {
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+          ? 'audio/mp4'
+          : '';
+      mediaRecorder = mime
+        ? new MediaRecorder(mediaStream, { mimeType: mime })
+        : new MediaRecorder(mediaStream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) mediaChunks.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        if (mediaChunks.length) {
+          const blob = new Blob(mediaChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
+          const url = URL.createObjectURL(blob);
+          if (userRecordingUrl.value) {
+            try {
+              URL.revokeObjectURL(userRecordingUrl.value);
+            } catch (_) {}
+          }
+          userRecordingUrl.value = url;
+        }
+        mediaChunks = [];
+      };
+      mediaRecorder.start(200);
+    }
+    return mediaStream;
   } catch (err) {
-    console.warn('MediaRecorder unavailable:', err);
+    console.warn('Media capture unavailable:', err);
     mediaRecorder = null;
+    return null;
   }
 }
 
@@ -1007,7 +1087,6 @@ watch(
     deconstructResult.value = null;
     showTagInput.value = false;
     stopListening({ skipAnalyze: true });
-    clearSilenceTimer();
     clearUserRecording();
     cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
   }
@@ -1015,7 +1094,6 @@ watch(
 
 onUnmounted(() => {
   speechService.stopSpeaking();
-  clearSilenceTimer();
   stopListening({ skipAnalyze: true });
   clearUserRecording();
   stopMediaCapture();
@@ -1137,46 +1215,45 @@ function closePronunciationTest() {
 }
 
 async function startThaiListening() {
-  if (!isSpeechSupported.value || isListening.value) return;
+  if (!isSpeechSupported.value || isListening.value || stoppingListen) return;
 
-  clearSilenceTimer();
+  stoppingListen = false;
   isListening.value = true;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
   pendingFinalize = true;
   firstSpeechAt = 0;
-  lastSpeechAt = 0;
+  listenStartedAt = Date.now();
 
-  // STT first, then optional local recording (avoids mic lock on some phones)
+  // Mic stream + volume-based auto-stop + local recording
+  await startMediaCapture();
+
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
-    onResult: ({ text, interim, final }) => {
-      spokenThaiText.value = text;
-      if (!text.trim()) return;
-      const now = Date.now();
-      if (!firstSpeechAt) firstSpeechAt = now;
-      lastSpeechAt = now;
-      // Score only after auto/manual stop — but keep extending silence timer
-      scheduleAutoStop();
+    onResult: ({ text }) => {
+      if (text?.trim()) spokenThaiText.value = text;
     },
     onError: (err) => {
       console.warn('Thai STT error:', err);
-      clearSilenceTimer();
-      isListening.value = false;
-      stopMediaCapture();
-      // Still try to score whatever we caught
       if (pendingFinalize && spokenThaiText.value.trim()) {
         pendingFinalize = false;
         finalizePronunciation(spokenThaiText.value);
       }
     },
     onEnd: (finalTranscript) => {
-      clearSilenceTimer();
-      isListening.value = false;
       recognitionHandle = null;
+      if (!isListening.value && !pendingFinalize) return;
+      isListening.value = false;
+      stopVad();
       try {
         if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
       } catch (_) {}
+      if (mediaStream) {
+        try {
+          mediaStream.getTracks().forEach((t) => t.stop());
+        } catch (_) {}
+        mediaStream = null;
+      }
       if (!pendingFinalize) return;
       pendingFinalize = false;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
@@ -1184,15 +1261,16 @@ async function startThaiListening() {
         spokenThaiText.value = finalText;
         finalizePronunciation(finalText);
       }
+      stoppingListen = false;
     }
   });
-
-  // Non-blocking: own-voice playback blob for this card
-  startMediaCapture().catch(() => {});
 }
 
 function stopListening({ skipAnalyze = false } = {}) {
-  clearSilenceTimer();
+  if (stoppingListen && !skipAnalyze) return;
+  stoppingListen = true;
+  stopVad();
+
   if (skipAnalyze) pendingFinalize = false;
 
   if (recognitionHandle?.stop) {
@@ -1206,20 +1284,27 @@ function stopListening({ skipAnalyze = false } = {}) {
   try {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   } catch (_) {}
+  if (mediaStream) {
+    try {
+      mediaStream.getTracks().forEach((t) => t.stop());
+    } catch (_) {}
+    mediaStream = null;
+  }
 
   if (skipAnalyze) {
     stopMediaCapture();
+    stoppingListen = false;
     return;
   }
 
-  // Fallback if onEnd didn't run (some browsers)
   setTimeout(() => {
     if (pendingFinalize) {
       pendingFinalize = false;
       const text = (spokenThaiText.value || '').trim();
       if (text) finalizePronunciation(text);
     }
-  }, 300);
+    stoppingListen = false;
+  }, 350);
 }
 
 function toggleThaiListening() {
