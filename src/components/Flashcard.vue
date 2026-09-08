@@ -862,16 +862,38 @@ let hardMaxTimer = null;
 let didFinalizeThisListen = false;
 let pttHeld = false;
 let pttPointerId = null;
-/** Prevents double-stop from pointerup + pointercancel on the same gesture */
 let pttSessionId = 0;
+let pttDownAt = 0;
+let docPointerUpBound = false;
 
 const MAX_LISTEN_MS = 15000;
+/** Ignore phantom cancels right after press (common on mobile). */
+const IGNORE_CANCEL_MS = 450;
 
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
     clearTimeout(hardMaxTimer);
     hardMaxTimer = null;
   }
+}
+
+function unbindDocPointerUp() {
+  if (!docPointerUpBound) return;
+  docPointerUpBound = false;
+  window.removeEventListener('pointerup', onDocPointerUp, true);
+  window.removeEventListener('pointercancel', onDocPointerUp, true);
+}
+
+function onDocPointerUp(e) {
+  if (!pttHeld) return;
+  if (pttPointerId != null && e.pointerId != null && e.pointerId !== pttPointerId) return;
+  if (e.type === 'pointercancel' && Date.now() - pttDownAt < IGNORE_CANCEL_MS) {
+    return;
+  }
+  pttHeld = false;
+  pttPointerId = null;
+  unbindDocPointerUp();
+  stopListening({ skipAnalyze: false });
 }
 
 function finalizePronunciation(finalText) {
@@ -922,6 +944,7 @@ watch(
 onUnmounted(() => {
   speechService.stopSpeaking();
   stopListening({ skipAnalyze: true });
+  unbindDocPointerUp();
 });
 
 const speedOptions = [0.5, 0.7, 1.0, 1.2];
@@ -1055,6 +1078,7 @@ function startThaiListening() {
 
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
+    wantHold: () => pttHeld && pttSessionId === sessionId && !stoppingListen,
     onStart: () => {
       if (pttSessionId !== sessionId || !pttHeld) return;
       isListening.value = true;
@@ -1073,12 +1097,9 @@ function startThaiListening() {
       if (finalText) spokenThaiText.value = finalText;
       isListening.value = false;
 
-      // Browser ended early while still held (common on Android) — do NOT restart
-      // (restart = mic beep loop). Keep transcript; user can release or hold again.
       if (pttHeld && !meta?.intentional) {
-        if (pendingFinalize && finalText) {
-          // keep text visible; score on release
-        }
+        // Service may one-shot retry while held; keep UI active
+        isListening.value = true;
         return;
       }
 
@@ -1093,24 +1114,40 @@ function startThaiListening() {
 function onPttDown(e) {
   if (!isSpeechSupported.value || stoppingListen) return;
   if (pttHeld) return;
-  // Only primary button / touch
   if (e.pointerType === 'mouse' && e.button !== 0) return;
 
   pttHeld = true;
   pttPointerId = e.pointerId ?? null;
   pttSessionId += 1;
+  pttDownAt = Date.now();
+
+  try {
+    e.currentTarget?.setPointerCapture?.(e.pointerId);
+  } catch (_) {}
+
+  if (!docPointerUpBound) {
+    docPointerUpBound = true;
+    window.addEventListener('pointerup', onDocPointerUp, true);
+    window.addEventListener('pointercancel', onDocPointerUp, true);
+  }
+
   startThaiListening();
 }
 
 function onPttUp(e) {
   if (!pttHeld) return;
   if (pttPointerId != null && e?.pointerId != null && e.pointerId !== pttPointerId) return;
-  // Ignore lostpointercapture — on many mobile browsers it fires spuriously and
-  // stops recognition while the finger is still down (mic on→off "дергает").
   if (e?.type === 'lostpointercapture') return;
+  if (e?.type === 'pointercancel' && Date.now() - pttDownAt < IGNORE_CANCEL_MS) {
+    return;
+  }
 
   pttHeld = false;
   pttPointerId = null;
+  unbindDocPointerUp();
+  try {
+    e?.currentTarget?.releasePointerCapture?.(e.pointerId);
+  } catch (_) {}
   stopListening({ skipAnalyze: false });
 }
 
@@ -1118,6 +1155,7 @@ function stopListening({ skipAnalyze = false } = {}) {
   if (stoppingListen && !skipAnalyze) return;
   stoppingListen = true;
   clearHardMaxTimer();
+  unbindDocPointerUp();
 
   const textSnapshot = (spokenThaiText.value || '').trim();
   if (skipAnalyze) pendingFinalize = false;

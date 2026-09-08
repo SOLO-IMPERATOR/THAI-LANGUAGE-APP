@@ -22,6 +22,7 @@ class SpeechService {
     this._sttGeneration = 0;
     this._sttRestartTimer = null;
     this._sttRestartsThisHold = 0;
+    this._sttGate = Promise.resolve();
 
     if (this.synth) {
       this.initVoices();
@@ -325,119 +326,222 @@ class SpeechService {
   /**
    * Push-to-talk Thai STT (Web Speech API).
    *
-   * Design rules (Chrome/Android realities):
-   * - NEVER auto-restart while held: each start()/stop() plays system mic sounds.
-   * - One SpeechRecognition instance per hold; stop() only on intentional release.
-   * - continuous=true helps desktop; Android may still end on silence — user re-holds.
-   * - Prefer stop() over abort() so interim/final results can flush.
+   * Chrome/Android quirks we handle:
+   * 1) Starting while a previous session is still closing → start beep then instant end.
+   *    Fix: serialize sessions; wait ~150ms after previous onend before new start.
+   * 2) Occasional premature onend right after onstart while finger still held.
+   *    Fix: at most ONE silent retry if session lived < 700ms and wantHold() is true.
+   * 3) Never loop-restart (that causes endless mic beeps).
    */
-  startThaiRecognition({ onResult, onError, onEnd, onStart, continuous = true } = {}) {
+  startThaiRecognition({
+    onResult,
+    onError,
+    onEnd,
+    onStart,
+    continuous = true,
+    wantHold = null
+  } = {}) {
     if (!this.isSpeechRecognitionSupported()) {
       const err = new Error('Распознавание речи не поддерживается браузером. Рекомендуется Chrome или Safari.');
       if (onError) onError(err);
       return null;
     }
 
-    this.abortRecognitionHard();
-
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRec();
-    recognition.lang = 'th-TH';
-    recognition.interimResults = true;
-    recognition.continuous = !!continuous;
-    recognition.maxAlternatives = 3;
-
+    let recognition = null;
     let finalTranscript = '';
     let lastHeard = '';
     let intentionalStop = false;
     let started = false;
     let finished = false;
+    let startedAt = 0;
+    let prematureRetries = 0;
+    let settleResolve = null;
+
+    const prevGate = this._sttGate || Promise.resolve();
+    this._sttGate = new Promise((resolve) => {
+      settleResolve = resolve;
+    });
+
+    const releaseGate = () => {
+      if (settleResolve) {
+        const r = settleResolve;
+        settleResolve = null;
+        r();
+      }
+    };
 
     const finish = () => {
       if (finished) return;
       finished = true;
       this.isListening = false;
       if (this.activeRecognition === recognition) this.activeRecognition = null;
+      recognition = null;
       const text = (finalTranscript || lastHeard || '').trim();
       if (onEnd) onEnd(text, { intentional: intentionalStop, started });
+      // Let Chrome fully drop the mic before the next hold
+      setTimeout(releaseGate, 160);
     };
 
-    recognition.onstart = () => {
-      started = true;
-      this.isListening = true;
-      this.activeRecognition = recognition;
-      if (onStart) onStart();
-    };
+    const bindRecognition = (rec) => {
+      recognition = rec;
+      rec.lang = 'th-TH';
+      rec.interimResults = true;
+      rec.continuous = !!continuous;
+      rec.maxAlternatives = 3;
 
-    recognition.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const item = event.results[i];
-        if (item.isFinal) finalTranscript += item[0].transcript;
-        else interim += item[0].transcript;
-      }
-      const text = (finalTranscript + ' ' + interim).trim();
-      lastHeard = text;
-      if (onResult) {
-        onResult({
-          final: finalTranscript.trim(),
-          interim: interim.trim(),
-          text,
-          isFinalSegment: !interim,
-          complete: false
-        });
-      }
-    };
+      rec.onstart = () => {
+        started = true;
+        startedAt = Date.now();
+        this.isListening = true;
+        this.activeRecognition = rec;
+        if (onStart) onStart();
+      };
 
-    recognition.onerror = (event) => {
-      const errName = event?.error || '';
-      // Benign: browser ended due to silence / our abort
-      if (errName === 'no-speech' || errName === 'aborted') return;
-      if (errName === 'not-allowed' || errName === 'service-not-allowed') {
-        intentionalStop = true;
+      rec.onresult = (event) => {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) finalTranscript += item[0].transcript;
+          else interim += item[0].transcript;
+        }
+        const text = (finalTranscript + ' ' + interim).trim();
+        lastHeard = text;
+        if (onResult) {
+          onResult({
+            final: finalTranscript.trim(),
+            interim: interim.trim(),
+            text,
+            isFinalSegment: !interim,
+            complete: false
+          });
+        }
+      };
+
+      rec.onerror = (event) => {
+        const errName = event?.error || '';
+        if (errName === 'no-speech' || errName === 'aborted') return;
+        if (errName === 'not-allowed' || errName === 'service-not-allowed') {
+          intentionalStop = true;
+          if (onError) onError(event);
+          return;
+        }
         if (onError) onError(event);
+      };
+
+      rec.onend = () => {
+        if (this.activeRecognition === rec) this.activeRecognition = null;
+        this.isListening = false;
+
+        const livedMs = startedAt ? Date.now() - startedAt : 0;
+        const stillHeld = typeof wantHold === 'function' && wantHold();
+        // Instant death right after start (or before onstart) while user still holds → one retry
+        if (
+          !intentionalStop &&
+          !finished &&
+          stillHeld &&
+          prematureRetries < 1 &&
+          (!startedAt || livedMs < 700)
+        ) {
+          prematureRetries += 1;
+          setTimeout(() => {
+            if (intentionalStop || finished || !(typeof wantHold === 'function' && wantHold())) {
+              finish();
+              return;
+            }
+            try {
+              const next = new SpeechRec();
+              bindRecognition(next);
+              next.start();
+              this.activeRecognition = next;
+            } catch (err) {
+              if (onError) onError(err);
+              finish();
+            }
+          }, 220);
+          return;
+        }
+
+        finish();
+      };
+    };
+
+    const startWhenReady = () => {
+      if (intentionalStop || finished) {
+        releaseGate();
         return;
       }
-      if (onError) onError(event);
+      // Soft-clear leftover without abort-storm
+      if (this.activeRecognition) {
+        try {
+          this.activeRecognition.onend = null;
+          this.activeRecognition.abort?.();
+        } catch (_) {}
+        this.activeRecognition = null;
+      }
+      try {
+        const rec = new SpeechRec();
+        bindRecognition(rec);
+        rec.start();
+        this.activeRecognition = rec;
+      } catch (e) {
+        // InvalidStateError: retry once after settle
+        setTimeout(() => {
+          if (intentionalStop || finished) {
+            releaseGate();
+            return;
+          }
+          try {
+            const rec = new SpeechRec();
+            bindRecognition(rec);
+            rec.start();
+            this.activeRecognition = rec;
+          } catch (err2) {
+            if (onError) onError(err2);
+            finish();
+          }
+        }, 300);
+      }
     };
 
-    recognition.onend = () => {
-      // Do NOT restart here — restarts cause mic on/off beeps ("дергает").
-      finish();
-    };
-
-    try {
-      recognition.start();
-      this.activeRecognition = recognition;
-    } catch (e) {
-      if (onError) onError(e);
-      finish();
-      return null;
-    }
+    // Wait until previous session fully released the mic
+    prevGate
+      .catch(() => {})
+      .then(() => new Promise((r) => setTimeout(r, 120)))
+      .then(startWhenReady);
 
     return {
       stop: () => {
         if (finished) return;
         intentionalStop = true;
-        try {
-          recognition.stop();
-        } catch (_) {
+        const rec = recognition || this.activeRecognition;
+        if (rec) {
           try {
-            recognition.abort();
-          } catch (_) {}
+            rec.stop();
+          } catch (_) {
+            try {
+              rec.abort();
+            } catch (_) {}
+            finish();
+          }
+        } else {
+          // start still queued — cancel
           finish();
         }
       },
       abort: () => {
         if (finished) return;
         intentionalStop = true;
-        try {
-          recognition.onend = null;
-          recognition.onresult = null;
-          recognition.onerror = null;
-          recognition.onstart = null;
-          recognition.abort();
-        } catch (_) {}
+        const rec = recognition || this.activeRecognition;
+        if (rec) {
+          try {
+            rec.onend = null;
+            rec.onresult = null;
+            rec.onerror = null;
+            rec.onstart = null;
+            rec.abort();
+          } catch (_) {}
+        }
         finish();
       }
     };
@@ -452,6 +556,8 @@ class SpeechService {
       clearTimeout(this._sttRestartTimer);
       this._sttRestartTimer = null;
     }
+    // Reset gate so a hard abort never leaves start() permanently blocked
+    this._sttGate = Promise.resolve();
     if (!rec) return;
     try {
       rec.onstart = null;
