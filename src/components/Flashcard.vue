@@ -182,14 +182,13 @@
               class="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
 
-            <div class="flex flex-col items-center py-2 select-none">
+            <div v-if="isSpeechSupported" class="flex flex-col items-center py-2 select-none">
               <button
                 @pointerdown.prevent="onPttDown"
                 @pointerup.prevent="onPttUp"
                 @pointercancel.prevent="onPttUp"
                 @lostpointercapture="onPttUp"
                 @contextmenu.prevent
-                :disabled="!isSpeechSupported"
                 type="button"
                 class="relative flex items-center justify-center w-14 h-14 rounded-full transition-all active:scale-95 shadow-lg cursor-pointer touch-none"
                 :class="
@@ -269,12 +268,12 @@
               <svg v-else class="w-7 h-7 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M12 18V6l-4 4H5v4h3l4 4z" /></svg>
             </button>
             <button
+              v-if="isSpeechSupported"
               @pointerdown.prevent="onPttDown"
               @pointerup.prevent="onPttUp"
               @pointercancel.prevent="onPttUp"
               @lostpointercapture="onPttUp"
               @contextmenu.prevent
-              :disabled="!isSpeechSupported"
               type="button"
               class="px-4 py-2.5 rounded-2xl text-xs font-bold text-white cursor-pointer touch-none select-none"
               :class="isListening ? 'bg-rose-600' : 'bg-indigo-600 hover:bg-indigo-700'"
@@ -474,7 +473,12 @@
                   Проверка ответа (th-TH)
                 </h4>
                 <p class="text-[11px] text-slate-500">
-                  Удерживайте микрофон и произнесите фразу, либо подтвердите знание:
+                  <template v-if="isSpeechSupported">
+                    Удерживайте микрофон и произнесите фразу, либо подтвердите знание:
+                  </template>
+                  <template v-else>
+                    В этом браузере нет Web Speech — подтвердите знание вручную или введите ответ текстом.
+                  </template>
                 </p>
               </div>
             </div>
@@ -487,15 +491,17 @@
             </button>
           </div>
 
-          <!-- Microphone Big Controller — push to talk -->
-          <div class="flex flex-col items-center justify-center py-2 select-none">
+          <!-- Microphone Big Controller — push to talk (Web Speech only) -->
+          <div
+            v-if="isSpeechSupported"
+            class="flex flex-col items-center justify-center py-2 select-none"
+          >
             <button
               @pointerdown.prevent="onPttDown"
               @pointerup.prevent="onPttUp"
               @pointercancel.prevent="onPttUp"
               @lostpointercapture="onPttUp"
               @contextmenu.prevent
-              :disabled="!isSpeechSupported"
               class="relative flex items-center justify-center w-16 h-16 rounded-full transition-all active:scale-95 shadow-lg focus:outline-none cursor-pointer touch-none"
               :class="
                 isListening
