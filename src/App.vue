@@ -39,32 +39,8 @@
           </button>
         </div>
 
-        <!-- Header Actions: Gender Switcher, Leaderboard, User Profile (ЛК) & Settings -->
+        <!-- Header Actions: Leaderboard, User Profile (ЛК) & Settings -->
         <div class="flex items-center gap-2 sm:gap-2.5">
-          <!-- Gender Switcher (Kha / Khap) -->
-          <div class="inline-flex items-center p-0.5 sm:p-1 bg-slate-100 rounded-2xl border border-slate-200 shadow-2xs">
-            <button
-              @click="setGlobalGender('female', true)"
-              type="button"
-              class="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer"
-              :class="store.userGender === 'female' ? 'bg-white text-rose-700 shadow-xs font-black' : 'text-slate-500 hover:text-slate-800'"
-              title="Женский вариант: вежливые частицы ค่ะ / คะ (савади кха)"
-            >
-              <span>👩</span>
-              <span class="hidden xs:inline">кха</span>
-            </button>
-            <button
-              @click="setGlobalGender('male', true)"
-              type="button"
-              class="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer"
-              :class="store.userGender === 'male' ? 'bg-white text-indigo-700 shadow-xs font-black' : 'text-slate-500 hover:text-slate-800'"
-              title="Мужской вариант: вежливая частица ครับ (савади кхрап)"
-            >
-              <span>👨</span>
-              <span class="hidden xs:inline">кхап</span>
-            </button>
-          </div>
-
           <!-- Weekly Leaderboard Button -->
           <button
             @click="communityStore.openCommunity('leaderboard')"
