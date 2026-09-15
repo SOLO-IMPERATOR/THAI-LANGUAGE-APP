@@ -36,13 +36,13 @@ export default defineConfig(() => {
       silenceViteHmrPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
+        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg', 'tailingo-icon.png'],
         manifest: {
           id: '/',
           name: 'Тайлинго',
           short_name: 'Тайлинго',
           description: 'Тренажер разговорного тайского языка с практической русской транскрипцией, SRS и проверкой произношения',
-          theme_color: '#0f172a',
+          theme_color: '#0f766e',
           background_color: '#0f172a',
           display: 'standalone',
           orientation: 'portrait',
@@ -50,19 +50,19 @@ export default defineConfig(() => {
           scope: '/',
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: '/pwa-192x192.png?v=tailingo3',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: '/pwa-512x512.png?v=tailingo3',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: '/pwa-maskable-512x512.png?v=tailingo3',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
