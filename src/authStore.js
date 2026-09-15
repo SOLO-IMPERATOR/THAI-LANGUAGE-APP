@@ -182,6 +182,9 @@ export const useAuthStore = defineStore('auth', {
         const learningStore = useLearningStore();
         learningStore.setUserGender(gender);
         await learningStore.applyServerSrsProgress(newUser.id);
+        if (learningStore.isSessionNoProgress()) {
+          learningStore.startNewSession();
+        }
       } catch (e) {}
 
       // 4. Update communityStore immediately
@@ -260,11 +263,17 @@ export const useAuthStore = defineStore('auth', {
           const learningStore = useLearningStore();
           learningStore.setUserGender(user.gender);
           await learningStore.applyServerSrsProgress(user.id);
+          if (learningStore.isSessionNoProgress()) {
+            learningStore.startNewSession();
+          }
         } catch (e) {}
       } else {
         try {
           const learningStore = useLearningStore();
           await learningStore.applyServerSrsProgress(user.id);
+          if (learningStore.isSessionNoProgress()) {
+            learningStore.startNewSession();
+          }
         } catch (e) {}
       }
 

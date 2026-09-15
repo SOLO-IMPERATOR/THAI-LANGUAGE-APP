@@ -169,18 +169,8 @@ export const useLearningStore = defineStore('learning', {
         console.warn('setupReminderSchedule error:', err);
       }
 
-      try {
-        const restored = await this.tryRestoreSession();
-        if (!restored) {
-          this.startNewSession();
-        }
-      } catch (err) {
-        console.warn('session restore/start error:', err);
-        try {
-          this.startNewSession();
-        } catch (_) {}
-      }
-
+      // SRS must be applied BEFORE building the session, otherwise mix mode
+      // treats already-learned phrases as "new" and skips due reviews (3 instead of 3+3).
       try {
         const userId = this.getActiveUserId();
         if (userId) {
@@ -188,6 +178,19 @@ export const useLearningStore = defineStore('learning', {
         }
       } catch (err) {
         console.warn('applyServerSrsProgress error:', err);
+      }
+
+      try {
+        const restored = await this.tryRestoreSession();
+        // Fresh queue when nothing meaningful was done yet — pick up latest due reviews.
+        if (!restored || this.isSessionNoProgress()) {
+          this.startNewSession();
+        }
+      } catch (err) {
+        console.warn('session restore/start error:', err);
+        try {
+          this.startNewSession();
+        } catch (_) {}
       }
 
       this.isInitialized = true;
@@ -298,10 +301,10 @@ export const useLearningStore = defineStore('learning', {
           await db.phrases.update(phrase.id, patch);
         }
 
-        this.refreshSessionQueueFromPhrases();
-        if (!this._sessionRestored) {
-          this.startNewSession();
-        } else {
+        // Only refresh phrase fields on an in-progress queue; session build
+        // happens in initialize() / login after this returns.
+        if (this.sessionQueue?.length) {
+          this.refreshSessionQueueFromPhrases();
           await this.persistActiveSession();
         }
       } catch (err) {
@@ -396,12 +399,20 @@ export const useLearningStore = defineStore('learning', {
       }
     },
 
-    canSafelyRebuildSession() {
+    /** True when the user has not yet progressed in today's session. */
+    isSessionNoProgress() {
       return (
-        this.currentSessionIndex === 0 &&
-        (this.sessionStats?.completedCount || 0) === 0 &&
-        !this.sessionQueue.some((p) => p.awaitingRecall)
+        (Number(this.currentSessionIndex) || 0) === 0 &&
+        (Number(this.sessionStats?.completedCount) || 0) === 0 &&
+        (Number(this.sessionStats?.newLearned) || 0) === 0 &&
+        (Number(this.sessionStats?.reviewsDone) || 0) === 0 &&
+        !this.sessionQueue.some((p) => p.demotedThisSession) &&
+        !this.sessionQueue.some((p) => p.awaitingRecall && !p.isReview)
       );
+    },
+
+    canSafelyRebuildSession() {
+      return this.isSessionNoProgress();
     },
 
     /**
@@ -962,16 +973,16 @@ export const useLearningStore = defineStore('learning', {
         reviewCount: nextReviewCount
       });
 
-      // Update queue item
+      // Session role (review vs new) is fixed when the queue is built — not by current SRS stage.
       const qItem = this.sessionQueue[this.currentSessionIndex];
-      const wasReview = !!qItem?.isReview || previousStage > 0;
+      const wasReview = !!qItem?.isReview;
       if (qItem) {
         Object.assign(qItem, updatedData, {
           awaitingRecall: false
         });
       }
 
-      // Stats: only new study cards fill the daily goal counter
+      // Stats: only new study cards fill the daily goal counter; reviews are separate.
       if (wasReview) {
         this.sessionStats.reviewsDone += 1;
       } else {

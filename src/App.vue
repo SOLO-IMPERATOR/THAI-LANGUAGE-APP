@@ -248,7 +248,7 @@
                 <p class="text-[10px] text-slate-400 font-medium">
                   Карточка {{ Math.min(store.currentSessionIndex + 1, store.sessionQueue.length || 1) }} из {{ store.sessionQueue.length || 0 }}
                   <span v-if="store.sessionReviewCount" class="text-amber-700 font-bold">
-                    · +{{ store.sessionReviewCount }} повтор{{ store.sessionReviewCount === 1 ? '' : store.sessionReviewCount < 5 ? 'а' : 'ов' }}
+                    · повторы {{ store.sessionStats.reviewsDone || 0 }}/{{ store.sessionReviewCount }}
                   </span>
                 </p>
               </div>
