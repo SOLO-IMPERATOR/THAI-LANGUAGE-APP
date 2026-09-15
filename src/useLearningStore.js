@@ -547,11 +547,10 @@ export const useLearningStore = defineStore('learning', {
         });
       };
 
-      const maxLen = Math.max(studyQueue.length, reviewQueue.length);
-      for (let i = 0; i < maxLen; i += 1) {
-        if (i < reviewQueue.length) pushMarked(reviewQueue[i], true);
-        if (i < studyQueue.length) pushMarked(studyQueue[i], false);
-      }
+      // Study (new) cards first, then reviews — so «Пропустить» walks the study pool
+      // before landing on recall-only reviews.
+      studyQueue.forEach((p) => pushMarked(p, false));
+      reviewQueue.forEach((p) => pushMarked(p, true));
 
       this.sessionQueue = uniqueQueue;
       this.lastCompletedSession = uniqueQueue.map((p) => ({ ...p }));
@@ -830,19 +829,52 @@ export const useLearningStore = defineStore('learning', {
     },
 
     /**
-     * Skip current phrase: moves it to the end of the active queue without penalizing SRS
+     * Skip current phrase: no SRS change. Re-queues among remaining practice cards
+     * (before pending reviews) so Skip walks the whole study pool, not only reviews.
      */
     skipCurrentPhrase() {
       if (this.sessionQueue.length <= 1) {
         this.persistActiveSession();
         return;
       }
-      const current = this.sessionQueue[this.currentSessionIndex];
+      const idx = this.currentSessionIndex;
+      const current = this.sessionQueue[idx];
       if (!current) return;
 
-      this.sessionQueue.splice(this.currentSessionIndex, 1);
-      // Skip keeps practice status; mix among remaining (not always the end)
-      this.insertIntoRemainingQueue({ ...current, awaitingRecall: false }, { skipImmediate: true });
+      this.sessionQueue.splice(idx, 1);
+      const item = {
+        ...current,
+        awaitingRecall: false,
+        isReview: false
+      };
+
+      // Insert before the first pending review-recall card so we don't jump
+      // straight into reviews while practice cards remain.
+      let firstReview = -1;
+      for (let i = idx; i < this.sessionQueue.length; i += 1) {
+        if (this.sessionQueue[i].isReview && this.sessionQueue[i].awaitingRecall) {
+          firstReview = i;
+          break;
+        }
+      }
+
+      let insertAt = firstReview === -1 ? this.sessionQueue.length : firstReview;
+      // If the next card is already a review, put the skipped study card after all
+      // reviews so index stays on that review only when no practice remains —
+      // but when practice remains after idx, insertAt is already past them.
+      // Avoid re-showing the same card: never insert at `idx` when other cards exist.
+      if (insertAt === idx && this.sessionQueue.length > idx) {
+        insertAt = this.sessionQueue.length;
+      }
+
+      this.sessionQueue.splice(insertAt, 0, item);
+
+      // Skipped the last card: after splice idx === length; show first unfinished
+      // (items before original idx are already done via success).
+      if (this.currentSessionIndex >= this.sessionQueue.length) {
+        this.currentSessionIndex = Math.max(0, this.sessionQueue.length - 1);
+      }
+
       this.persistActiveSession();
     },
 
