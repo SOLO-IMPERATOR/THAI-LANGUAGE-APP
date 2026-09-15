@@ -170,7 +170,7 @@ app.post('/api/register', (req, res) => {
 // 6. Sync user profile progress (xp/level/streak)
 app.post('/api/users/sync', (req, res) => {
   try {
-    const { id, email, xp, level, streak, gender, avatar, username, cityInThailand } = req.body;
+    const { id, email, xp, weeklyScore, level, streak, gender, avatar, username, cityInThailand } = req.body;
     if (!id && !email) {
       return res.status(400).json({ error: 'ID or email required' });
     }
@@ -178,7 +178,7 @@ app.post('/api/users/sync', (req, res) => {
     const updated = syncUserProgress({
       id,
       email,
-      xp,
+      xp: xp !== undefined && xp !== null ? xp : weeklyScore,
       level,
       streak,
       gender,

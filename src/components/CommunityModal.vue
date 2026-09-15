@@ -1014,6 +1014,9 @@ const newRoomRequireApproval = ref(false);
 
 function setTab(tab) {
   communityStore.setActiveTab(tab);
+  if (tab === 'leaderboard') {
+    void communityStore.fetchUsersFromServer();
+  }
 }
 
 // User profile preview (Requirement 4)

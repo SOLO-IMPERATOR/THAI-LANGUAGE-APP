@@ -76,6 +76,7 @@ export type UserRecord = {
   stayDuration: string;
   dailyGoal: number;
   xp: number;
+  weeklyScore?: number;
   level: number;
   streak: number;
   registeredAt: string;
@@ -237,7 +238,8 @@ function mapUserRow(row: any): UserRecord {
     cityInThailand: row.city_in_thailand || 'Бангкок',
     stayDuration: row.stay_duration || 'Турист / Отпуск',
     dailyGoal: row.daily_goal ?? 10,
-    xp: row.xp || 0,
+    xp: Number(row.xp ?? 0),
+    weeklyScore: Number(row.xp ?? 0),
     level: row.level || 1,
     streak: row.streak || 1,
     registeredAt: row.registered_at,
@@ -365,7 +367,7 @@ export function syncUserProgress(patch: {
 
   const updated: UserRecord = {
     ...existing,
-    xp: patch.xp !== undefined ? patch.xp : existing.xp,
+    xp: patch.xp !== undefined && patch.xp !== null ? Number(patch.xp) : existing.xp,
     level: patch.level !== undefined ? patch.level : existing.level,
     streak: patch.streak !== undefined ? patch.streak : existing.streak,
     gender: patch.gender !== undefined ? patch.gender : existing.gender,
@@ -375,6 +377,7 @@ export function syncUserProgress(patch: {
       patch.cityInThailand !== undefined ? patch.cityInThailand : existing.cityInThailand,
     lastActiveAt: new Date().toISOString(),
   };
+  updated.weeklyScore = updated.xp;
 
   getDb()
     .prepare(

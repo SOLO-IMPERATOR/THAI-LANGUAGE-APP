@@ -83,7 +83,7 @@ try {
         $updated = sync_user_progress([
             'id' => $body['id'] ?? null,
             'email' => $body['email'] ?? null,
-            'xp' => $body['xp'] ?? null,
+            'xp' => $body['xp'] ?? $body['weeklyScore'] ?? null,
             'level' => $body['level'] ?? null,
             'streak' => $body['streak'] ?? null,
             'gender' => $body['gender'] ?? null,

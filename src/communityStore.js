@@ -161,7 +161,7 @@ export const useCommunityStore = defineStore('community', {
           lastName: currentUser.lastName,
           cityInThailand: currentUser.cityInThailand || 'Таиланд',
           stayDuration: currentUser.stayDuration || '',
-          weeklyScore: currentUser.weeklyScore || 0,
+          weeklyScore: currentUser.weeklyScore ?? 0,
           isPrivate: !!currentUser.isPrivate,
           avatarUrl: currentUser.avatarUrl || ''
         });
@@ -172,7 +172,10 @@ export const useCommunityStore = defineStore('community', {
             ...list[idx],
             ...currentUser,
             id: sid(currentUser.id),
-            weeklyScore: currentUser.weeklyScore || list[idx].weeklyScore || 0
+            weeklyScore:
+              currentUser.weeklyScore !== undefined && currentUser.weeklyScore !== null
+                ? Number(currentUser.weeklyScore) || 0
+                : list[idx].weeklyScore || 0
           };
         }
       }
@@ -213,10 +216,29 @@ export const useCommunityStore = defineStore('community', {
       return data;
     },
 
+    scoreFromUser(user) {
+      if (!user) return 0;
+      if (user.weeklyScore !== undefined && user.weeklyScore !== null) {
+        return Number(user.weeklyScore) || 0;
+      }
+      if (user.xp !== undefined && user.xp !== null) {
+        return Number(user.xp) || 0;
+      }
+      return 0;
+    },
+
     async fetchUsersFromServer() {
       try {
         const serverUsers = await this.apiJson('/api/users');
         if (!Array.isArray(serverUsers) || serverUsers.length === 0) return;
+
+        // Drop demo seed rows once a real roster exists (server is source of truth).
+        const seedIds = new Set(SEED_USERS.map((u) => sid(u.id)));
+        const serverIds = new Set(serverUsers.map((u) => sid(u.id)));
+        this.communityUsers = this.communityUsers.filter(
+          (u) => !seedIds.has(sid(u.id)) || serverIds.has(sid(u.id))
+        );
+
         for (const su of serverUsers) {
           this.addUserLocally({
             id: sid(su.id),
@@ -226,9 +248,10 @@ export const useCommunityStore = defineStore('community', {
             gender: su.gender || 'male',
             cityInThailand: su.cityInThailand || 'Таиланд',
             stayDuration: su.stayDuration || '',
-            weeklyScore: su.weeklyScore || su.xp || 50,
+            weeklyScore: this.scoreFromUser(su),
             isPrivate: su.isPrivate === true,
-            avatarUrl: su.avatar || su.avatarUrl || ''
+            avatarUrl: su.avatar || su.avatarUrl || '',
+            _fromServer: true
           });
         }
       } catch (err) {
@@ -241,6 +264,7 @@ export const useCommunityStore = defineStore('community', {
       const idx = this.communityUsers.findIndex(
         (u) => idEq(u.id, user.id) || (user.email && u.email?.toLowerCase() === user.email?.toLowerCase())
       );
+      const incomingScore = this.scoreFromUser(user);
       const mapped = {
         id: sid(user.id),
         email: user.email,
@@ -249,12 +273,17 @@ export const useCommunityStore = defineStore('community', {
         gender: user.gender || 'female',
         cityInThailand: user.cityInThailand || user.city || 'Таиланд',
         stayDuration: user.stayDuration || '',
-        weeklyScore: user.weeklyScore || user.xp || 60,
+        weeklyScore: incomingScore,
         isPrivate: user.isPrivate === true,
         avatarUrl: user.avatarUrl || user.avatar || ''
       };
       if (idx !== -1) {
-        this.communityUsers[idx] = { ...this.communityUsers[idx], ...mapped };
+        const prev = this.communityUsers[idx];
+        // Prefer explicit server scores; never let a missing local score wipe a known one.
+        if (!user._fromServer && incomingScore === 0 && (prev.weeklyScore || 0) > 0) {
+          mapped.weeklyScore = prev.weeklyScore;
+        }
+        this.communityUsers[idx] = { ...prev, ...mapped };
       } else {
         this.communityUsers.unshift(mapped);
       }
@@ -369,15 +398,23 @@ export const useCommunityStore = defineStore('community', {
       this.addUserLocally({
         ...user,
         id: sid(user.id),
-        weeklyScore: user.weeklyScore || user.xp || 50,
-        avatarUrl: user.avatarUrl || user.avatar || ''
+        weeklyScore: this.scoreFromUser(user),
+        avatarUrl: user.avatarUrl || user.avatar || '',
+        _fromServer: true
       });
       this.pollUserId = sid(user.id);
     },
 
     addScoreToUser(userId, points = 10) {
+      // Compat shim: absolute score is applied by auth.updateProfile → syncCurrentUser.
+      // Do not bump again here (that previously double-counted XP on the leaderboard).
+      void userId;
+      void points;
+    },
+
+    setUserWeeklyScore(userId, score) {
       const u = this.communityUsers.find((user) => idEq(user.id, userId));
-      if (u) u.weeklyScore = (u.weeklyScore || 0) + points;
+      if (u) u.weeklyScore = Number(score) || 0;
     },
 
     setActiveTab(tab) {
@@ -756,7 +793,9 @@ export const useCommunityStore = defineStore('community', {
         this.activeTab = tab;
       }
       this.isCommunityModalOpen = true;
-      this.syncSocial();
+      // Refetch roster/scores so other participants' XP is fresh when opening.
+      void this.fetchUsersFromServer();
+      void this.syncSocial();
     },
 
     closeCommunity() {

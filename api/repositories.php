@@ -46,6 +46,7 @@ function map_user_row(array $row): array
         'stayDuration' => $row['stay_duration'] ?? 'Турист / Отпуск',
         'dailyGoal' => (int) ($row['daily_goal'] ?? 10),
         'xp' => (int) ($row['xp'] ?? 0),
+        'weeklyScore' => (int) ($row['xp'] ?? 0),
         'level' => (int) ($row['level'] ?? 1),
         'streak' => (int) ($row['streak'] ?? 1),
         'registeredAt' => $row['registered_at'],
@@ -231,6 +232,7 @@ function sync_user_progress(array $patch): ?array
             $updated[$key] = $patch[$key];
         }
     }
+    $updated['weeklyScore'] = (int) $updated['xp'];
     $updated['lastActiveAt'] = now_iso();
 
     $stmt = db()->prepare(

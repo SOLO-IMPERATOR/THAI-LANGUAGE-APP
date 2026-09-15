@@ -299,9 +299,13 @@ export const useAuthStore = defineStore('auth', {
         }
       }
 
-      // Sync to server
+      // Sync to server (xp mirrors weeklyScore so leaderboard stays shared)
+      const score =
+        updatedUser.weeklyScore !== undefined && updatedUser.weeklyScore !== null
+          ? Number(updatedUser.weeklyScore)
+          : Number(updatedUser.xp ?? 0);
       try {
-        fetch('/api/users/sync', {
+        await fetch('/api/users/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -311,10 +315,16 @@ export const useAuthStore = defineStore('auth', {
             avatar: updatedUser.avatarUrl,
             username: `${updatedUser.firstName || ''} ${updatedUser.lastName || ''}`.trim(),
             cityInThailand: updatedUser.cityInThailand,
-            dailyGoal: updatedUser.dailyGoal
+            dailyGoal: updatedUser.dailyGoal,
+            xp: score,
+            weeklyScore: score,
+            level: updatedUser.level,
+            streak: updatedUser.streak
           })
-        }).catch(() => {});
-      } catch (e) {}
+        });
+      } catch (e) {
+        console.warn('Could not sync profile to server:', e);
+      }
 
       if (updates.gender) {
         try {
