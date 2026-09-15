@@ -34,7 +34,7 @@
             Добавить приложение на главный экран
           </h3>
           <p class="text-xs text-slate-500 font-medium mt-0.5">
-            Тайский фразовик PWA
+            Тайлинго PWA
           </p>
         </div>
       </div>
@@ -128,7 +128,7 @@
       <!-- Action Area: Desktop Browser Guide -->
       <div v-else class="space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-200/80">
         <div class="text-xs text-slate-700 leading-relaxed">
-          Чтобы установить приложение на компьютер или телефон, нажмите на значок установки <strong>«⊕»</strong> в правой части адресной строки браузера или выберите в меню браузера: <strong>«Установить Тайский фразовик»</strong>.
+          Чтобы установить приложение на компьютер или телефон, нажмите на значок установки <strong>«⊕»</strong> в правой части адресной строки браузера или выберите в меню браузера: <strong>«Установить Тайлинго»</strong>.
         </div>
         <button
           @click="handleNativeInstall"

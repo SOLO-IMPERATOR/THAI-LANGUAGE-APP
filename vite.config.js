@@ -39,8 +39,8 @@ export default defineConfig(() => {
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
         manifest: {
           id: '/',
-          name: 'Тайский фразовик',
-          short_name: 'Фразовик',
+          name: 'Тайлинго',
+          short_name: 'Тайлинго',
           description: 'Тренажер разговорного тайского языка с практической русской транскрипцией, SRS и проверкой произношения',
           theme_color: '#0f172a',
           background_color: '#0f172a',

@@ -6,13 +6,13 @@
     <!-- Top Navigation Header -->
     <header class="sticky top-0 z-40 bg-[#f8fafc]/90 backdrop-blur-md border-b border-slate-200/80 px-4 md:px-8 py-3.5">
       <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-        <!-- Logo (Elephant), Title (Тайский фразовик) & Quick Install Button -->
+        <!-- Logo (Elephant), Title (Тайлинго) & Quick Install Button -->
         <div class="flex items-center gap-3 sm:gap-3.5 flex-wrap sm:flex-nowrap">
           <div class="flex items-center gap-3 sm:gap-3.5">
             <ElephantLogo container-class="w-11 h-11 sm:w-12 sm:h-12 shadow-lg shadow-indigo-200 flex-shrink-0" icon-class="w-6 h-6 sm:w-7 sm:h-7" />
             <div>
               <h1 class="text-xl md:text-2xl font-black tracking-tight text-slate-900 leading-none">
-                Тайский <span class="text-indigo-600">фразовик</span>
+                Тай<span class="text-indigo-600">линго</span>
               </h1>
               <p class="text-xs text-slate-400 font-medium tracking-wider mt-1 hidden sm:block">
                 Тренажер разговорной речи • Практическая транскрипция • SRS
@@ -401,7 +401,7 @@
     <footer class="mt-auto border-t border-slate-200/80 px-4 md:px-8 py-5 text-center text-xs text-slate-500">
       <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
         <div class="font-medium text-slate-600">
-          Тайский фразовик • Тренажер разговорного тайского языка
+          Тайлинго • Тренажер разговорного тайского языка
         </div>
         <div class="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 text-[11px] text-slate-400 font-medium">
           <span>Интервальное повторение SRS • Практическая транскрипция</span>
