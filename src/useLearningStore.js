@@ -4,6 +4,8 @@ import { getGenderedPhrase } from './phrasesData.js';
 import { clampDailyGoal, DAILY_GOAL_DEFAULT } from './dailyGoal.js';
 
 const ACTIVE_SESSION_KEY = 'activeSession';
+/** Bump to force-rebuild stuck local queues after session-logic fixes (mix 3+3, reviews). */
+const SESSION_FORMAT = 3;
 
 function todayKey() {
   const d = new Date();
@@ -579,6 +581,7 @@ export const useLearningStore = defineStore('learning', {
 
     sessionSnapshot() {
       return {
+        format: SESSION_FORMAT,
         date: this.sessionDate || todayKey(),
         goal: clampDailyGoal(this.settings.dailyGoal),
         index: this.currentSessionIndex,
@@ -591,6 +594,29 @@ export const useLearningStore = defineStore('learning', {
         })),
         lastCompletedIds: (this.lastCompletedSession || []).map((p) => p.id)
       };
+    },
+
+    /**
+     * Discard a saved session that was built before SRS sync / review flags
+     * (e.g. mix goal 3 with only 3 "new" cards and no due reviews in queue).
+     */
+    isSavedSessionStale(saved) {
+      if (!saved || !Array.isArray(saved.queue)) return true;
+      if (Number(saved.format) !== SESSION_FORMAT) return true;
+
+      if (this.settings.trainingMode === 'mix') {
+        const now = Date.now();
+        const goal = clampDailyGoal(this.settings.dailyGoal);
+        const dueReviews = this.phrases.filter(
+          (p) => (Number(p.stage_srs) || 0) > 0 && (Number(p.next_review) || 0) <= now
+        );
+        const reviewInQueue = saved.queue.filter((e) => e.isReview).length;
+        // Stuck pattern: due reviews exist locally, but queue never got review cards.
+        if (dueReviews.length > 0 && reviewInQueue === 0 && saved.queue.length <= goal) {
+          return true;
+        }
+      }
+      return false;
     },
 
     async persistActiveSession() {
@@ -625,6 +651,14 @@ export const useLearningStore = defineStore('learning', {
         const saved = row?.value;
         if (!saved || !Array.isArray(saved.queue) || saved.queue.length === 0) return false;
         if (saved.date !== todayKey()) return false;
+
+        // Force rebuild for users stuck on pre-fix queues (wrong 3 instead of 3+3).
+        if (this.isSavedSessionStale(saved)) {
+          try {
+            await db.settings.delete(ACTIVE_SESSION_KEY);
+          } catch (_) {}
+          return false;
+        }
 
         const currentGoal = clampDailyGoal(this.settings.dailyGoal);
         const savedGoal = clampDailyGoal(saved.goal ?? saved.queue.length);
