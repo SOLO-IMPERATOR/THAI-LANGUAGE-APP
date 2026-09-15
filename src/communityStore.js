@@ -743,7 +743,18 @@ export const useCommunityStore = defineStore('community', {
     },
 
     openCommunity(tab = 'leaderboard') {
-      this.activeTab = tab;
+      // If there are pending incoming requests, open Friends tab so accept is obvious
+      try {
+        const uid = this.pollUserId;
+        const incoming = uid ? this.incomingRequests(uid) : [];
+        if ((!tab || tab === 'leaderboard') && incoming.length > 0) {
+          this.activeTab = 'friends';
+        } else {
+          this.activeTab = tab;
+        }
+      } catch (_) {
+        this.activeTab = tab;
+      }
       this.isCommunityModalOpen = true;
       this.syncSocial();
     },

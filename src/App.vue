@@ -65,7 +65,7 @@
             </button>
           </div>
 
-          <!-- Weekly Leaderboard Button (Requirement 6) -->
+          <!-- Weekly Leaderboard Button -->
           <button
             @click="communityStore.openCommunity('leaderboard')"
             type="button"
@@ -123,6 +123,19 @@
             class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-2xl shadow-sm transition cursor-pointer"
           >
             Войти / Регистрация
+          </button>
+
+          <!-- Phrases catalog -->
+          <button
+            @click="showPhrasesCatalog = true"
+            class="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 shadow-xs transition cursor-pointer active:scale-95 text-xs font-bold"
+            title="Список всех фраз"
+            type="button"
+          >
+            <svg class="w-4 h-4 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h10M4 18h10" />
+            </svg>
+            <span class="hidden sm:inline">Фразы</span>
           </button>
 
           <!-- Settings Button -->
@@ -214,24 +227,30 @@
 
               <!-- Big Metric Number -->
               <div class="flex items-end gap-2 my-2">
-                <span class="text-6xl font-black text-slate-900 tracking-tight">{{ store.settings.dailyGoal }}</span>
-                <span class="text-xl text-slate-400 font-bold mb-2">фраз в день</span>
+                <span class="text-6xl font-black text-slate-900 tracking-tight">{{ store.studyGoalCount }}</span>
+                <span class="text-xl text-slate-400 font-bold mb-2">фраз на изучение</span>
               </div>
 
               <!-- Session Progress Bar -->
               <div class="space-y-2 pt-2">
                 <div class="flex justify-between text-xs font-semibold text-slate-500">
-                  <span>Пройдено в серии</span>
-                  <span class="text-indigo-600 font-black">{{ store.currentSessionIndex }} / {{ store.sessionQueue.length }}</span>
+                  <span>Пройдено новых</span>
+                  <span class="text-indigo-600 font-black">{{ store.studyCompletedCount }} / {{ store.studyGoalCount }}</span>
                 </div>
                 <div class="flex gap-1.5 h-2.5">
                   <div
-                    v-for="idx in Math.max(1, store.sessionQueue.length || store.settings.dailyGoal)"
+                    v-for="idx in Math.max(1, store.studyGoalCount)"
                     :key="idx"
                     class="h-full flex-grow rounded-full transition-all duration-300"
-                    :class="idx <= store.currentSessionIndex ? 'bg-indigo-600' : 'bg-slate-100'"
+                    :class="idx <= store.studyCompletedCount ? 'bg-indigo-600' : 'bg-slate-100'"
                   />
                 </div>
+                <p class="text-[10px] text-slate-400 font-medium">
+                  Карточка {{ Math.min(store.currentSessionIndex + 1, store.sessionQueue.length || 1) }} из {{ store.sessionQueue.length || 0 }}
+                  <span v-if="store.sessionReviewCount" class="text-amber-700 font-bold">
+                    · +{{ store.sessionReviewCount }} повтор{{ store.sessionReviewCount === 1 ? '' : store.sessionReviewCount < 5 ? 'а' : 'ов' }}
+                  </span>
+                </p>
               </div>
             </div>
 
@@ -288,6 +307,29 @@
                   Сменить
                 </button>
               </div>
+            </div>
+
+            <!-- Phrases catalog quick access -->
+            <div
+              @click="showPhrasesCatalog = true"
+              class="p-4 rounded-2xl bg-slate-50 border border-slate-200 hover:border-indigo-300 transition cursor-pointer flex items-center justify-between group"
+            >
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-indigo-600 flex-shrink-0">
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h10M4 18h10" />
+                  </svg>
+                </div>
+                <div>
+                  <div class="text-xs font-bold text-slate-900 group-hover:text-indigo-700 transition">
+                    Все фразы
+                  </div>
+                  <div class="text-[11px] text-slate-500 mt-0.5">
+                    Поиск по-русски · фильтры · {{ store.phrases.length }} шт.
+                  </div>
+                </div>
+              </div>
+              <span class="text-xs font-bold text-indigo-600 group-hover:translate-x-1 transition-transform">→</span>
             </div>
 
             <!-- Weekly Leaderboard Preview Card -->
@@ -389,6 +431,9 @@
 
     <!-- Settings Modal -->
     <SettingsModal v-if="showSettings" @close="showSettings = false" />
+
+    <!-- All phrases catalog -->
+    <PhrasesCatalogModal v-if="showPhrasesCatalog" @close="showPhrasesCatalog = false" />
   </div>
 </template>
 
@@ -401,12 +446,14 @@ import { usePwaStore } from './pwaStore.js';
 import Flashcard from './components/Flashcard.vue';
 import InstallBanner from './components/InstallBanner.vue';
 import SettingsModal from './components/SettingsModal.vue';
+import PhrasesCatalogModal from './components/PhrasesCatalogModal.vue';
 import AuthModal from './components/AuthModal.vue';
 import UserProfileModal from './components/UserProfileModal.vue';
 import CommunityModal from './components/CommunityModal.vue';
 import PwaInstallModal from './components/PwaInstallModal.vue';
 import ElephantLogo from './components/ElephantLogo.vue';
 import UserAvatar from './components/UserAvatar.vue';
+import { clampDailyGoal } from './dailyGoal.js';
 
 const store = useLearningStore();
 const authStore = useAuthStore();
@@ -414,6 +461,7 @@ const communityStore = useCommunityStore();
 const pwaStore = usePwaStore();
 
 const showSettings = ref(false);
+const showPhrasesCatalog = ref(false);
 const initError = ref(null);
 const hasExplicitlyChosenGender = ref(
   typeof localStorage !== 'undefined' && localStorage.getItem('thai_frazovik_gender_set') === 'true'
@@ -463,9 +511,16 @@ async function startApp() {
 
   try {
     await store.initialize();
-    // Sync dailyGoal with logged-in user preferences
-    if (authStore.currentUser?.dailyGoal) {
-      store.settings.dailyGoal = authStore.currentUser.dailyGoal;
+    // Dexie/settings are source of truth for the trainer.
+    // If profile goal differs, push local goal to profile — never overwrite a just-set 3 with old 5/10.
+    if (authStore.currentUser?.dailyGoal != null) {
+      const localGoal = clampDailyGoal(store.settings.dailyGoal);
+      const profileGoal = clampDailyGoal(authStore.currentUser.dailyGoal);
+      if (localGoal !== profileGoal) {
+        try {
+          await authStore.updateProfile({ dailyGoal: localGoal });
+        } catch (_) {}
+      }
     }
   } catch (err) {
     console.error('Store initialize error:', err);

@@ -66,60 +66,12 @@
         </div>
 
         <!-- 1. Daily Goal Selector -->
-        <div>
-
-          <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-            Дневная норма фраз
-          </label>
-          <div class="grid grid-cols-4 gap-2 mb-2">
-            <button
-              v-for="goal in [3, 5, 10]"
-              :key="goal"
-              @click="setGoal(goal)"
-              type="button"
-              class="py-2.5 rounded-2xl text-xs font-bold border transition active:scale-95"
-              :class="
-                store.settings.dailyGoal === goal && !isCustomGoal
-                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-100'
-                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-              "
-            >
-              {{ goal }}
-            </button>
-            <button
-              @click="isCustomGoal = true"
-              type="button"
-              class="py-2.5 rounded-2xl text-xs font-bold border transition active:scale-95"
-              :class="
-                isCustomGoal
-                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-100'
-                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-              "
-            >
-              Свое
-            </button>
-          </div>
-
-          <!-- Custom Number Input -->
-          <div v-if="isCustomGoal" class="flex items-center gap-2 mt-2">
-            <input
-              v-model.number="customGoalValue"
-              @change="applyCustomGoal"
-              type="number"
-              min="1"
-              max="50"
-              placeholder="Количество..."
-              class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-3.5 py-2 text-xs font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-xs"
-            />
-            <button
-              @click="applyCustomGoal"
-              class="px-4 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-xs font-bold uppercase tracking-wider text-white transition shadow-sm"
-              type="button"
-            >
-              ОК
-            </button>
-          </div>
-        </div>
+        <DailyGoalPicker
+          :model-value="store.settings.dailyGoal"
+          label="Дневная норма фраз"
+          hint="Пресеты 2 / 3 / 5 / 7 или своё число (1–50)."
+          @update:model-value="setGoal"
+        />
 
         <!-- 2. Training Mode -->
         <div>
@@ -282,10 +234,10 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
 import { useLearningStore } from '../useLearningStore.js';
 import { useAuthStore } from '../authStore.js';
 import { speechService } from '../speechService.js';
+import DailyGoalPicker from './DailyGoalPicker.vue';
 
 const emit = defineEmits(['close']);
 const store = useLearningStore();
@@ -329,10 +281,6 @@ function testSpeedVoice() {
   });
 }
 
-
-const isCustomGoal = ref(![3, 5, 10].includes(store.settings.dailyGoal));
-const customGoalValue = ref(store.settings.dailyGoal);
-
 const modes = [
   {
     id: 'mix',
@@ -352,14 +300,7 @@ const modes = [
 ];
 
 function setGoal(val) {
-  isCustomGoal.value = false;
   store.updateSetting('dailyGoal', val);
-}
-
-function applyCustomGoal() {
-  const v = Math.max(1, Math.min(50, Number(customGoalValue.value) || 5));
-  customGoalValue.value = v;
-  store.updateSetting('dailyGoal', v);
 }
 
 function setTrainingMode(mode) {

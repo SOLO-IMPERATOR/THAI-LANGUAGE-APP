@@ -3,16 +3,37 @@
     <!-- Card Container: Bento Centerpiece -->
     <div
       v-if="phrase"
-      class="bg-white rounded-[32px] p-5 sm:p-8 shadow-xl shadow-slate-200/50 border border-slate-100 flex flex-col justify-between relative transition-all duration-300 min-h-[500px] w-full max-w-full overflow-hidden"
+      class="rounded-[32px] p-5 sm:p-8 shadow-xl flex flex-col justify-between relative transition-all duration-300 min-h-[500px] w-full max-w-full overflow-hidden border"
+      :class="
+        store.isCurrentReview
+          ? 'bg-amber-50/90 border-amber-200 shadow-amber-100/60'
+          : 'bg-white border-slate-100 shadow-slate-200/50'
+      "
     >
       <!-- Top Meta Bar: Category, Tags, and Tone Legend -->
-      <div class="w-full pb-3 border-b border-slate-100">
+      <div
+        class="w-full pb-3 border-b"
+        :class="store.isCurrentReview ? 'border-amber-200/80' : 'border-slate-100'"
+      >
         <!-- Row 1: Category & Tags with interactive tag manager -->
         <div class="flex items-center justify-between gap-2 flex-wrap min-w-0">
           <div class="flex items-center gap-1.5 flex-wrap min-w-0 max-w-full">
             <!-- Category Badge -->
-            <span class="bg-indigo-50 text-indigo-700 text-[11px] px-2.5 py-1 rounded-xl font-bold uppercase tracking-wider border border-indigo-100 flex-shrink-0">
+            <span
+              class="text-[11px] px-2.5 py-1 rounded-xl font-bold uppercase tracking-wider border flex-shrink-0"
+              :class="
+                store.isCurrentReview
+                  ? 'bg-amber-100 text-amber-900 border-amber-200'
+                  : 'bg-indigo-50 text-indigo-700 border-indigo-100'
+              "
+            >
               {{ phrase.category }}
+            </span>
+            <span
+              v-if="store.isCurrentReview"
+              class="text-[11px] px-2.5 py-1 rounded-xl font-black uppercase tracking-wider bg-amber-500 text-white border border-amber-600 flex-shrink-0"
+            >
+              Повтор
             </span>
 
             <!-- Quick Gender Switcher (Kha / Khap) -->
@@ -147,8 +168,11 @@
       <div class="my-auto py-5 flex flex-col items-center text-center w-full">
         <!-- ========== RECALL PHASE: Russian only → Проверить / Забыл ========== -->
         <template v-if="cardPhase === 'recall'">
-          <div class="mb-2 text-[11px] uppercase tracking-widest text-emerald-600 font-black">
-            Финальная проверка в сессии
+          <div
+            class="mb-2 text-[11px] uppercase tracking-widest font-black"
+            :class="store.isCurrentReview ? 'text-amber-700' : 'text-emerald-600'"
+          >
+            {{ store.isCurrentReview ? 'Повтор — помните фразу?' : 'Финальная проверка в сессии' }}
           </div>
           <div class="mt-1 mb-5 px-5 py-4 rounded-3xl bg-emerald-50 border border-emerald-200 inline-block max-w-xl w-full">
             <span class="text-[10px] text-emerald-700/80 font-bold uppercase tracking-wider block mb-1">
@@ -199,25 +223,18 @@
 
             <div v-if="isSpeechSupported" class="flex flex-col items-center py-2 select-none">
               <button
-                @pointerdown.prevent="onPttDown"
-                @pointerup.prevent="onPttUp"
-                @pointercancel.prevent="onPttUp"
-                @contextmenu.prevent
                 type="button"
-                class="relative flex items-center justify-center w-14 h-14 rounded-full transition-all active:scale-95 shadow-lg cursor-pointer touch-none"
-                :class="
-                  isListening
-                    ? 'bg-rose-600 text-white ring-4 ring-rose-200'
-                    : 'bg-emerald-600 text-white hover:bg-emerald-700 ring-4 ring-emerald-50'
-                "
+                class="relative flex items-center justify-center w-14 h-14 rounded-full transition-all active:scale-95 shadow-lg cursor-pointer"
+                :class="micButtonClass"
+                @click="toggleMic"
               >
                 <span v-if="isListening" class="absolute inset-0 rounded-full border-2 border-rose-400 animate-ping" />
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
               </button>
-              <span class="text-[11px] font-bold mt-2 text-slate-600">
-                {{ isListening ? 'Говорите… отпустите, чтобы оценить' : 'Удерживайте и говорите сразу после звука микр.' }}
+              <span class="text-[11px] font-bold mt-2 text-slate-600 text-center px-2">
+                {{ micHint }}
               </span>
             </div>
 
@@ -229,11 +246,30 @@
               </div>
             </div>
 
-            <p v-if="recallFeedback" class="text-xs font-bold text-center" :class="recallOk ? 'text-emerald-700' : 'text-rose-600'">
+            <p
+              v-if="recallFeedback && !pendingRecallAdvance"
+              class="text-xs font-bold text-center"
+              :class="recallOk ? 'text-emerald-700' : 'text-rose-600'"
+            >
               {{ recallFeedback }}
             </p>
 
-            <div class="flex flex-col sm:flex-row gap-2 pt-1">
+            <div v-if="recallOk && pendingRecallAdvance" class="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-center space-y-2">
+              <p class="text-sm font-black text-emerald-900">Верно!</p>
+              <p class="text-[12px] text-emerald-800/90">{{ recallFeedback }}</p>
+              <div v-if="phrase" class="text-[11px] text-slate-600">
+                Эталон: <span class="font-bold text-slate-900">{{ phrase.transcription_ru }}</span>
+              </div>
+              <button
+                type="button"
+                class="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold uppercase tracking-wider cursor-pointer"
+                @click="confirmRecallAdvance"
+              >
+                Далее
+              </button>
+            </div>
+
+            <div v-else class="flex flex-col sm:flex-row gap-2 pt-1">
               <button
                 @click="submitRecallAnswer"
                 type="button"
@@ -256,7 +292,7 @@
         <!-- ========== FORGOT REVEAL: show answer, no credit ========== -->
         <template v-else-if="cardPhase === 'forgot'">
           <div class="mb-2 text-[11px] uppercase tracking-widest text-amber-700 font-black">
-            Забыли • без зачёта • покажем ещё раз
+            Забыли • этап −1 (один раз за сессию) • покажем ещё раз
           </div>
           <div class="mb-3 w-full px-2">
             <span class="text-[11px] uppercase tracking-widest text-slate-400 font-bold block mb-1">
@@ -283,15 +319,12 @@
             </button>
             <button
               v-if="isSpeechSupported"
-              @pointerdown.prevent="onPttDown"
-              @pointerup.prevent="onPttUp"
-              @pointercancel.prevent="onPttUp"
-              @contextmenu.prevent
               type="button"
-              class="px-4 py-2.5 rounded-2xl text-xs font-bold text-white cursor-pointer touch-none select-none"
+              class="px-4 py-2.5 rounded-2xl text-xs font-bold text-white cursor-pointer"
               :class="isListening ? 'bg-rose-600' : 'bg-indigo-600 hover:bg-indigo-700'"
+              @click="toggleMic"
             >
-              {{ isListening ? 'Говорите… отпустите' : 'Удерживайте и произнесите' }}
+              {{ micHintShort }}
             </button>
           </div>
 
@@ -519,23 +552,16 @@
             </p>
           </div>
 
-          <!-- Microphone Big Controller — push to talk (Web Speech only) -->
+          <!-- Microphone — tap to start, auto-stop on silence -->
           <div
             v-if="isSpeechSupported"
             class="flex flex-col items-center justify-center py-2 select-none"
           >
             <button
-              @pointerdown.prevent="onPttDown"
-              @pointerup.prevent="onPttUp"
-              @pointercancel.prevent="onPttUp"
-              @contextmenu.prevent
-              class="relative flex items-center justify-center w-16 h-16 rounded-full transition-all active:scale-95 shadow-lg focus:outline-none cursor-pointer touch-none"
-              :class="
-                isListening
-                  ? 'bg-rose-600 text-white shadow-rose-200 ring-4 ring-rose-200'
-                  : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-200 ring-4 ring-indigo-50'
-              "
               type="button"
+              class="relative flex items-center justify-center w-16 h-16 rounded-full transition-all active:scale-95 shadow-lg focus:outline-none cursor-pointer"
+              :class="micButtonClass"
+              @click="toggleMic"
             >
               <span
                 v-if="isListening"
@@ -550,9 +576,12 @@
               </svg>
             </button>
 
-            <span class="text-xs font-bold mt-2 text-slate-700">
-              {{ isListening ? 'Говорите… отпустите кнопку' : 'Удерживайте и говорите сразу после звука микр.' }}
+            <span class="text-xs font-bold mt-2 text-slate-700 text-center px-3">
+              {{ micHint }}
             </span>
+            <p class="text-[10px] text-slate-400 mt-1 text-center max-w-xs leading-relaxed">
+              Звук включения/выключения микрофона даёт браузер — отключить его нельзя.
+            </p>
           </div>
 
           <!-- Spoken Transcript display -->
@@ -847,9 +876,14 @@ const isRecallChecking = ref(false);
 const recallInput = ref('');
 const recallFeedback = ref('');
 const recallOk = ref(false);
+/** Hold success result until user taps «Далее». */
+const pendingRecallAdvance = ref(false);
+let pendingSuccessPayload = null;
 const RECALL_VOICE_MIN = 60;
 
 const isListening = ref(false);
+/** idle | warming | ready | speaking */
+const micPhase = ref('idle');
 const isSpeechSupported = ref(speechService.isSpeechRecognitionSupported());
 const spokenThaiText = ref('');
 const pronunciationAnalysis = ref(null);
@@ -859,16 +893,41 @@ let recognitionHandle = null;
 let pendingFinalize = false;
 let stoppingListen = false;
 let hardMaxTimer = null;
+let warmupTimer = null;
+let silenceTimer = null;
 let didFinalizeThisListen = false;
-let pttHeld = false;
-let pttPointerId = null;
-let pttSessionId = 0;
-let pttDownAt = 0;
-let docPointerUpBound = false;
+let listenWanted = false;
+let listenSessionId = 0;
+let warmupRetries = 0;
+let firstSpeechAt = 0;
 
-const MAX_LISTEN_MS = 15000;
-/** Ignore phantom cancels right after press (common on mobile). */
-const IGNORE_CANCEL_MS = 450;
+const WARMUP_MS = 1100;
+const SILENCE_STOP_MS = 1500;
+const MIN_SPEECH_MS = 700;
+const MAX_LISTEN_MS = 20000;
+
+const micHint = computed(() => {
+  if (micPhase.value === 'warming') return 'Подключаем микрофон… подождите';
+  if (micPhase.value === 'ready') return 'Говорите сейчас — остановлю по паузе';
+  if (micPhase.value === 'speaking') return 'Слушаю… пауза завершит запись';
+  return 'Нажмите, чтобы говорить';
+});
+
+const micHintShort = computed(() => {
+  if (micPhase.value === 'warming') return 'Подключение…';
+  if (micPhase.value === 'ready' || micPhase.value === 'speaking') return 'Стоп / пауза остановит';
+  return 'Нажмите и говорите';
+});
+
+const micButtonClass = computed(() => {
+  if (micPhase.value === 'warming') {
+    return 'bg-amber-500 text-white shadow-amber-200 ring-4 ring-amber-100';
+  }
+  if (isListening.value) {
+    return 'bg-rose-600 text-white shadow-rose-200 ring-4 ring-rose-200';
+  }
+  return 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-200 ring-4 ring-indigo-50';
+});
 
 function clearHardMaxTimer() {
   if (hardMaxTimer) {
@@ -877,23 +936,37 @@ function clearHardMaxTimer() {
   }
 }
 
-function unbindDocPointerUp() {
-  if (!docPointerUpBound) return;
-  docPointerUpBound = false;
-  window.removeEventListener('pointerup', onDocPointerUp, true);
-  window.removeEventListener('pointercancel', onDocPointerUp, true);
+function clearWarmupTimer() {
+  if (warmupTimer) {
+    clearTimeout(warmupTimer);
+    warmupTimer = null;
+  }
 }
 
-function onDocPointerUp(e) {
-  if (!pttHeld) return;
-  if (pttPointerId != null && e.pointerId != null && e.pointerId !== pttPointerId) return;
-  if (e.type === 'pointercancel' && Date.now() - pttDownAt < IGNORE_CANCEL_MS) {
-    return;
+function clearSilenceTimer() {
+  if (silenceTimer) {
+    clearTimeout(silenceTimer);
+    silenceTimer = null;
   }
-  pttHeld = false;
-  pttPointerId = null;
-  unbindDocPointerUp();
-  stopListening({ skipAnalyze: false });
+}
+
+function scheduleSilenceStop(sessionId) {
+  clearSilenceTimer();
+  silenceTimer = setTimeout(() => {
+    silenceTimer = null;
+    if (!listenWanted || listenSessionId !== sessionId) return;
+    if (!firstSpeechAt) return;
+    if (Date.now() - firstSpeechAt < MIN_SPEECH_MS) {
+      scheduleSilenceStop(sessionId);
+      return;
+    }
+    stopListening({ skipAnalyze: false });
+  }, SILENCE_STOP_MS);
+}
+
+function markMicReady(sessionId) {
+  if (!listenWanted || listenSessionId !== sessionId) return;
+  if (micPhase.value === 'warming') micPhase.value = 'ready';
 }
 
 function finalizePronunciation(finalText) {
@@ -924,8 +997,13 @@ const availableTagsToSuggest = computed(() => {
 });
 
 watch(
-  () => [phrase.value?.id, store.sessionQueue[store.currentSessionIndex]?.awaitingRecall],
+  () => [
+    phrase.value?.id,
+    store.sessionQueue[store.currentSessionIndex]?.awaitingRecall,
+    store.sessionQueue[store.currentSessionIndex]?.isReview
+  ],
   () => {
+    if (pendingRecallAdvance.value) return;
     isLearningExpanded.value = false;
     isTestingPronunciation.value = false;
     isRecallChecking.value = false;
@@ -938,13 +1016,13 @@ watch(
     showTagInput.value = false;
     stopListening({ skipAnalyze: true });
     cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
-  }
+  },
+  { immediate: true }
 );
 
 onUnmounted(() => {
   speechService.stopSpeaking();
   stopListening({ skipAnalyze: true });
-  unbindDocPointerUp();
 });
 
 const speedOptions = [0.5, 0.7, 1.0, 1.2];
@@ -1025,7 +1103,7 @@ function finishForgotWithoutCredit() {
   isTestingPronunciation.value = false;
   spokenThaiText.value = '';
   pronunciationAnalysis.value = null;
-  store.repeatInSession();
+  store.handleForgotInSession(phrase.value);
 }
 
 function enterRecallPhase() {
@@ -1049,6 +1127,7 @@ function openRecallCheck() {
 }
 
 function closeRecallCheck() {
+  if (pendingRecallAdvance.value) return;
   stopListening();
   isRecallChecking.value = false;
 }
@@ -1058,111 +1137,126 @@ function closePronunciationTest() {
   isTestingPronunciation.value = false;
 }
 
-function startThaiListening() {
-  if (!isSpeechSupported.value || stoppingListen || recognitionHandle) return;
+function toggleMic() {
+  if (!isSpeechSupported.value || stoppingListen) return;
+  if (listenWanted || isListening.value || recognitionHandle) {
+    stopListening({ skipAnalyze: false });
+    return;
+  }
+  startThaiListening();
+}
+
+function startThaiListening({ isWarmupRetry = false } = {}) {
+  if (!isSpeechSupported.value || stoppingListen) return;
+  if (recognitionHandle && !isWarmupRetry) return;
 
   stoppingListen = false;
+  listenWanted = true;
+  if (!isWarmupRetry) {
+    listenSessionId += 1;
+    warmupRetries = 0;
+    spokenThaiText.value = '';
+    pronunciationAnalysis.value = null;
+    pendingFinalize = true;
+    didFinalizeThisListen = false;
+    firstSpeechAt = 0;
+  }
+  const sessionId = listenSessionId;
+  micPhase.value = 'warming';
   isListening.value = true;
-  spokenThaiText.value = '';
-  pronunciationAnalysis.value = null;
-  pendingFinalize = true;
-  didFinalizeThisListen = false;
-  const sessionId = pttSessionId;
 
   clearHardMaxTimer();
+  clearWarmupTimer();
+  clearSilenceTimer();
   hardMaxTimer = setTimeout(() => {
-    if (pttHeld && pttSessionId === sessionId) {
+    if (listenWanted && listenSessionId === sessionId) {
       stopListening({ skipAnalyze: false });
     }
   }, MAX_LISTEN_MS);
 
   recognitionHandle = speechService.startThaiRecognition({
     continuous: true,
-    wantHold: () => pttHeld && pttSessionId === sessionId && !stoppingListen,
     onStart: () => {
-      if (pttSessionId !== sessionId || !pttHeld) return;
+      if (!listenWanted || listenSessionId !== sessionId) return;
       isListening.value = true;
+      micPhase.value = 'warming';
+      clearWarmupTimer();
+      warmupTimer = setTimeout(() => markMicReady(sessionId), WARMUP_MS);
     },
     onResult: ({ text }) => {
-      if (pttSessionId !== sessionId) return;
-      if (text?.trim()) spokenThaiText.value = text;
+      if (!listenWanted || listenSessionId !== sessionId) return;
+      if (!text?.trim()) return;
+      spokenThaiText.value = text;
+      if (!firstSpeechAt) firstSpeechAt = Date.now();
+      if (micPhase.value === 'warming') micPhase.value = 'ready';
+      micPhase.value = 'speaking';
+      scheduleSilenceStop(sessionId);
     },
     onError: (err) => {
       console.warn('Thai STT error:', err);
     },
-    onEnd: (finalTranscript, meta = {}) => {
-      if (pttSessionId !== sessionId) return;
+    onEnd: (finalTranscript) => {
+      if (listenSessionId !== sessionId) return;
       recognitionHandle = null;
       const finalText = (finalTranscript || spokenThaiText.value || '').trim();
       if (finalText) spokenThaiText.value = finalText;
-      isListening.value = false;
 
-      if (pttHeld && !meta?.intentional) {
-        // Service may one-shot retry while held; keep UI active
-        isListening.value = true;
+      // Premature death before first speech (Chrome often drops ~1s) → one retry only
+      if (
+        listenWanted &&
+        !stoppingListen &&
+        !firstSpeechAt &&
+        warmupRetries < 1 &&
+        (micPhase.value === 'warming' || micPhase.value === 'ready')
+      ) {
+        warmupRetries += 1;
+        clearWarmupTimer();
+        setTimeout(() => {
+          if (listenWanted && listenSessionId === sessionId) {
+            startThaiListening({ isWarmupRetry: true });
+          }
+        }, 280);
         return;
       }
 
-      if (pendingFinalize && finalText) {
+      clearHardMaxTimer();
+      clearWarmupTimer();
+      clearSilenceTimer();
+      isListening.value = false;
+      const wasWanted = listenWanted;
+      listenWanted = false;
+      micPhase.value = 'idle';
+
+      if (wasWanted && pendingFinalize && finalText) {
         pendingFinalize = false;
         finalizePronunciation(finalText);
+      } else if (wasWanted && pendingFinalize && !finalText && !didFinalizeThisListen) {
+        pendingFinalize = false;
+        pronunciationAnalysis.value = {
+          score: 0,
+          verdict: 'unclear',
+          feedbackTitle: 'Микрофон не удержался',
+          feedbackTip: 'Нажмите ещё раз, дождитесь «Говорите сейчас», затем произнесите фразу.',
+          syllableResults: []
+        };
       }
     }
   });
-}
-
-function onPttDown(e) {
-  if (!isSpeechSupported.value || stoppingListen) return;
-  if (pttHeld) return;
-  if (e.pointerType === 'mouse' && e.button !== 0) return;
-
-  pttHeld = true;
-  pttPointerId = e.pointerId ?? null;
-  pttSessionId += 1;
-  pttDownAt = Date.now();
-
-  try {
-    e.currentTarget?.setPointerCapture?.(e.pointerId);
-  } catch (_) {}
-
-  if (!docPointerUpBound) {
-    docPointerUpBound = true;
-    window.addEventListener('pointerup', onDocPointerUp, true);
-    window.addEventListener('pointercancel', onDocPointerUp, true);
-  }
-
-  startThaiListening();
-}
-
-function onPttUp(e) {
-  if (!pttHeld) return;
-  if (pttPointerId != null && e?.pointerId != null && e.pointerId !== pttPointerId) return;
-  if (e?.type === 'lostpointercapture') return;
-  if (e?.type === 'pointercancel' && Date.now() - pttDownAt < IGNORE_CANCEL_MS) {
-    return;
-  }
-
-  pttHeld = false;
-  pttPointerId = null;
-  unbindDocPointerUp();
-  try {
-    e?.currentTarget?.releasePointerCapture?.(e.pointerId);
-  } catch (_) {}
-  stopListening({ skipAnalyze: false });
 }
 
 function stopListening({ skipAnalyze = false } = {}) {
   if (stoppingListen && !skipAnalyze) return;
   stoppingListen = true;
   clearHardMaxTimer();
-  unbindDocPointerUp();
+  clearWarmupTimer();
+  clearSilenceTimer();
 
   const textSnapshot = (spokenThaiText.value || '').trim();
   if (skipAnalyze) pendingFinalize = false;
 
-  pttHeld = false;
-  pttPointerId = null;
+  listenWanted = false;
   isListening.value = false;
+  micPhase.value = 'idle';
 
   const handle = recognitionHandle;
   recognitionHandle = null;
@@ -1195,7 +1289,7 @@ function stopListening({ skipAnalyze = false } = {}) {
           score: 0,
           verdict: 'unclear',
           feedbackTitle: 'Речь не распознана',
-          feedbackTip: 'Удерживайте микрофон и говорите сразу после звука включения.',
+          feedbackTip: 'Нажмите микрофон, дождитесь «Говорите сейчас», затем произнесите фразу.',
           syllableResults: []
         };
       }
@@ -1205,21 +1299,20 @@ function stopListening({ skipAnalyze = false } = {}) {
 }
 
 async function creditRecallWithoutSpeech() {
-  // Manual credit for users who cannot speak
+  // Manual credit for users who cannot speak — show result first, advance on «Далее»
   stopListening();
   if (!phrase.value || cardPhase.value !== 'recall') return;
+  if (pendingRecallAdvance.value) return;
   recallOk.value = true;
-  recallFeedback.value = 'Засчитано вручную';
-  const res = await store.handleSuccess(phrase.value);
-  deconstructResult.value = res;
-  cardPhase.value = 'practice';
-  isRecallChecking.value = false;
-  recallInput.value = '';
+  recallFeedback.value = 'Засчитано вручную — фраза запомнена!';
+  pendingSuccessPayload = { phrase: phrase.value };
+  pendingRecallAdvance.value = true;
 }
 
 async function submitRecallAnswer() {
   stopListening();
   if (!phrase.value) return;
+  if (pendingRecallAdvance.value) return;
 
   const typed = recallInput.value.trim();
   const spoken = spokenThaiText.value.trim();
@@ -1243,11 +1336,22 @@ async function submitRecallAnswer() {
 
   recallOk.value = true;
   recallFeedback.value = `Верно (${match.score}%) — фраза запомнена!`;
-  const res = await store.handleSuccess(phrase.value);
+  pendingSuccessPayload = { phrase: phrase.value };
+  pendingRecallAdvance.value = true;
+}
+
+async function confirmRecallAdvance() {
+  if (!pendingRecallAdvance.value || !pendingSuccessPayload?.phrase) return;
+  const target = pendingSuccessPayload.phrase;
+  pendingRecallAdvance.value = false;
+  pendingSuccessPayload = null;
+  const res = await store.handleSuccess(target);
   deconstructResult.value = res;
-  cardPhase.value = 'practice';
   isRecallChecking.value = false;
   recallInput.value = '';
+  recallFeedback.value = '';
+  recallOk.value = false;
+  cardPhase.value = store.isCurrentAwaitingRecall() ? 'recall' : 'practice';
 }
 
 async function acceptVerificationAndAdvance() {

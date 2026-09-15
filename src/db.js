@@ -32,7 +32,7 @@ db.version(3).stores({
 export let INITIAL_PHRASES = [];
 
 /** Bump when phrase content / words_breakdown must refresh in IndexedDB. */
-const PHRASES_CONTENT_REV = 5;
+const PHRASES_CONTENT_REV = 6;
 
 function hasPoorWordsBreakdown(phrases, sampleSize = 80) {
   if (!phrases?.length) return true;
@@ -126,7 +126,7 @@ export async function initDatabase() {
 
     // Ensure default settings exist
     const defaultSettings = [
-      { key: 'dailyGoal', value: 10 },
+      { key: 'dailyGoal', value: 5 },
       { key: 'trainingMode', value: 'mix' }, // 'new' | 'review' | 'mix'
       { key: 'reminderHour', value: 10 },
       { key: 'reminderMinute', value: 0 },

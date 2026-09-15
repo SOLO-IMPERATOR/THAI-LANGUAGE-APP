@@ -19,7 +19,7 @@
       <div class="text-center mb-5">
         <ElephantLogo container-class="w-14 h-14 mx-auto mb-3 shadow-lg shadow-indigo-200" icon-class="w-8 h-8" />
         <h2 class="text-xl sm:text-2xl font-black tracking-tight text-slate-900">
-          {{ headerTitle }}
+          {{ headerИTitle }}
         </h2>
         <p class="text-xs sm:text-sm text-slate-500 mt-1 max-w-sm mx-auto">
           {{ headerSubtitle }}
@@ -229,28 +229,11 @@
         <!-- REGISTER STEP 2: goal, visibility, extra -->
         <template v-else>
           <div>
-            <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-              Сколько фраз в день? <span class="text-rose-500">*</span>
-            </label>
-            <div class="grid grid-cols-5 gap-2">
-              <button
-                v-for="goalOption in [5, 10, 15, 20, 25]"
-                :key="goalOption"
-                type="button"
-                @click="form.dailyGoal = goalOption"
-                class="py-2.5 rounded-2xl text-xs font-bold border transition cursor-pointer active:scale-95"
-                :class="
-                  form.dailyGoal === goalOption
-                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200'
-                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                "
-              >
-                {{ goalOption }}
-              </button>
-            </div>
-            <p class="text-[11px] text-slate-400 mt-1.5">
-              Рекомендуем <strong>10 фраз</strong> для устойчивого закрепления без перегрузки.
-            </p>
+            <DailyGoalPicker
+              v-model="form.dailyGoal"
+              label="Сколько фраз в день?"
+              hint="Рекомендуем 5–7 фраз для устойчивого закрепления без перегрузки."
+            />
           </div>
 
           <div>
@@ -437,6 +420,8 @@ import { ref, reactive, computed, watch } from 'vue';
 import { useAuthStore } from '../authStore.js';
 import { useLearningStore } from '../useLearningStore.js';
 import ElephantLogo from './ElephantLogo.vue';
+import DailyGoalPicker from './DailyGoalPicker.vue';
+import { clampDailyGoal, DAILY_GOAL_DEFAULT } from '../dailyGoal.js';
 
 const authStore = useAuthStore();
 const learningStore = useLearningStore();
@@ -459,7 +444,7 @@ const form = reactive({
   email: '',
   password: '',
   gender: 'female',
-  dailyGoal: 10,
+  dailyGoal: DAILY_GOAL_DEFAULT,
   cityInThailand: '',
   stayDuration: '',
   isPrivate: false,
@@ -561,8 +546,7 @@ async function handleSubmit() {
       });
 
       if (user.dailyGoal) {
-        learningStore.settings.dailyGoal = user.dailyGoal;
-        await learningStore.updateSetting('dailyGoal', user.dailyGoal);
+        await learningStore.updateSetting('dailyGoal', clampDailyGoal(user.dailyGoal));
         learningStore.startNewSession();
       }
 
@@ -571,8 +555,7 @@ async function handleSubmit() {
     } else {
       const user = await authStore.loginWithEmail(form.email, form.password);
       if (user.dailyGoal) {
-        learningStore.settings.dailyGoal = user.dailyGoal;
-        learningStore.startNewSession();
+        await learningStore.updateSetting('dailyGoal', clampDailyGoal(user.dailyGoal));
       }
       successMessage.value = 'С возвращением!';
     }

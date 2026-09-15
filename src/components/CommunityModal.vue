@@ -49,10 +49,10 @@
           class="flex-1 min-w-[90px] py-2 px-3 rounded-xl text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1.5 whitespace-nowrap relative"
           :class="activeTab === 'friends' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'"
         >
-          <span>👥 Друзья</span>
+          <span>👥 Друзья и заявки</span>
           <span
             v-if="incomingCount > 0"
-            class="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-black"
+            class="px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black leading-none"
           >
             {{ incomingCount }}
           </span>
@@ -329,24 +329,45 @@
 
         <!-- Normal Friends & Requests List View -->
         <div v-else class="space-y-5">
-          <!-- Section 1: Incoming Friend Requests -->
-          <div v-if="incomingFriendRequests.length > 0" class="space-y-2">
+          <!-- How-to banner -->
+          <div class="p-3 rounded-2xl bg-indigo-50/80 border border-indigo-100 text-[11px] text-indigo-900 leading-relaxed">
+            <strong class="font-black uppercase tracking-wider text-indigo-700">Где принять заявку?</strong>
+            <span class="block mt-1">
+              Входящие заявки появляются в блоке ниже с кнопками «Принять» и «Отклонить».
+              Отправить заявку можно из вкладки «Рейтинг недели».
+            </span>
+          </div>
+
+          <!-- Section 1: Incoming Friend Requests (always visible) -->
+          <div class="space-y-2">
             <h4 class="text-xs font-bold uppercase tracking-wider text-amber-700 flex items-center gap-1.5">
-              <span>🔔 Входящие заявки в друзья ({{ incomingFriendRequests.length }})</span>
+              <span>🔔 Входящие заявки в друзья</span>
+              <span
+                v-if="incomingFriendRequests.length > 0"
+                class="px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black"
+              >
+                {{ incomingFriendRequests.length }}
+              </span>
             </h4>
 
-            <div class="space-y-2">
+            <div v-if="incomingFriendRequests.length > 0" class="space-y-2">
               <div
                 v-for="req in incomingFriendRequests"
                 :key="req.id"
                 class="p-3 bg-amber-50/60 border border-amber-200 rounded-2xl flex items-center justify-between gap-3"
               >
-                <div class="flex items-center gap-2.5">
-                  <div class="w-9 h-9 rounded-xl bg-amber-200 text-amber-900 font-bold flex items-center justify-center text-xs">
-                    {{ req.fromUser?.firstName?.[0] || 'П' }}
-                  </div>
-                  <div>
-                    <div class="text-xs font-bold text-slate-900">
+                <div class="flex items-center gap-2.5 min-w-0">
+                  <UserAvatar
+                    :name="`${req.fromUser?.firstName || ''} ${req.fromUser?.lastName || ''}`"
+                    :email="req.fromUser?.email"
+                    :photo-url="req.fromUser?.avatarUrl"
+                    :seed="req.fromUserId || req.fromUser?.email"
+                    size-class="w-9 h-9"
+                    text-class="text-xs"
+                    rounded-class="rounded-xl"
+                  />
+                  <div class="min-w-0">
+                    <div class="text-xs font-bold text-slate-900 truncate">
                       {{ req.fromUser?.firstName }} {{ req.fromUser?.lastName }}
                     </div>
                     <div class="text-[10px] text-slate-500">
@@ -355,7 +376,7 @@
                   </div>
                 </div>
 
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 flex-shrink-0">
                   <button
                     @click="respondRequest(req.id, 'accepted')"
                     type="button"
@@ -372,6 +393,13 @@
                   </button>
                 </div>
               </div>
+            </div>
+            <div
+              v-else
+              class="p-4 rounded-2xl border border-dashed border-amber-200 bg-amber-50/40 text-[11px] text-amber-900/80 text-center leading-relaxed"
+            >
+              Пока нет входящих заявок. Когда кто-то отправит вам заявку из рейтинга — кнопки
+              <strong>«Принять»</strong> и <strong>«Отклонить»</strong> появятся здесь.
             </div>
           </div>
 
@@ -1044,7 +1072,7 @@ async function sendFriendRequest(targetUser) {
   }
   const res = await communityStore.sendFriendRequest(currentUserId.value, targetUser.id);
   if (res.success) {
-    noticeMessage.value = `Заявка в друзья пользователю ${targetUser.firstName} отправлена!`;
+    noticeMessage.value = `Заявка отправлена. ${targetUser.firstName} увидит её во вкладке «Друзья и заявки» → Принять.`;
   } else {
     noticeMessage.value = res.error;
   }

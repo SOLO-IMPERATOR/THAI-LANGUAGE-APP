@@ -280,27 +280,11 @@
         </div>
 
         <!-- 4. Настройки обучения: Дневная норма фраз -->
-        <div>
-          <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-            Дневная норма фраз в день / за сессию
-          </label>
-          <div class="grid grid-cols-5 gap-2">
-            <button
-              v-for="goal in [5, 10, 15, 20, 25]"
-              :key="goal"
-              type="button"
-              @click="formData.dailyGoal = goal"
-              class="py-2.5 rounded-2xl text-xs font-bold border transition cursor-pointer active:scale-95"
-              :class="
-                formData.dailyGoal === goal
-                  ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-200'
-                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-              "
-            >
-              {{ goal }}
-            </button>
-          </div>
-        </div>
+        <DailyGoalPicker
+          v-model="formData.dailyGoal"
+          label="Дневная норма фраз в день / за сессию"
+          hint="Пресеты 2 / 3 / 5 / 7 или своё число."
+        />
 
         <!-- 5. Режим видимости в рейтинге (С отступом) -->
         <div class="mt-6 p-5 rounded-3xl bg-slate-50 border border-slate-200/80 space-y-3">
@@ -405,6 +389,8 @@ import { ref, reactive, computed, watch } from 'vue';
 import { useAuthStore } from '../authStore.js';
 import { useLearningStore } from '../useLearningStore.js';
 import { gradientForSeed, isRealPhotoUrl } from '../avatarUtils.js';
+import DailyGoalPicker from './DailyGoalPicker.vue';
+import { clampDailyGoal } from '../dailyGoal.js';
 
 const authStore = useAuthStore();
 const learningStore = useLearningStore();
@@ -545,15 +531,13 @@ async function saveChanges() {
       gender: formData.gender,
       cityInThailand: formData.cityInThailand.trim(),
       stayDuration: formData.stayDuration.trim(),
-      dailyGoal: Number(formData.dailyGoal) || 10,
+      dailyGoal: clampDailyGoal(formData.dailyGoal),
       isPrivate: formData.isPrivate
     });
 
-    // Update learning store daily goal
+    // Sync learning store daily goal (keeps in-progress session if already started)
     if (updatedUser.dailyGoal) {
-      learningStore.settings.dailyGoal = updatedUser.dailyGoal;
       await learningStore.updateSetting('dailyGoal', updatedUser.dailyGoal);
-      learningStore.startNewSession();
     }
 
     successNotice.value = 'Данные профиля успешно сохранены!';

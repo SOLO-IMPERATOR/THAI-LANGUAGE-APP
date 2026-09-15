@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia';
 import { db, initDatabase, INITIAL_PHRASES } from './db.js';
 import { getGenderedPhrase } from './phrasesData.js';
+import { clampDailyGoal, DAILY_GOAL_DEFAULT } from './dailyGoal.js';
+
+const ACTIVE_SESSION_KEY = 'activeSession';
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 // SRS Interval map in milliseconds per user specification:
 // Day 3 -> Day 5 -> Day 7 (week) -> Day 14 (2 weeks) -> Day 30 (month)
@@ -18,7 +26,7 @@ export const useLearningStore = defineStore('learning', {
     dictionaryWords: [],
     userGender: typeof localStorage !== 'undefined' ? (localStorage.getItem('thai_frazovik_gender') || 'female') : 'female',
     settings: {
-      dailyGoal: 5,
+      dailyGoal: DAILY_GOAL_DEFAULT,
       trainingMode: 'mix', // 'new' | 'review' | 'mix'
       reminderHour: 10,
       reminderMinute: 0,
@@ -28,6 +36,7 @@ export const useLearningStore = defineStore('learning', {
     // Active training session queue
     sessionQueue: [],
     currentSessionIndex: 0,
+    sessionDate: '',
     isLoading: true,
     isInitialized: false,
     sessionStats: {
@@ -39,7 +48,9 @@ export const useLearningStore = defineStore('learning', {
     lastCompletedSession: [],
     selectedCategory: 'all',
     selectedTag: 'all',
-    reminderTimerId: null
+    reminderTimerId: null,
+    /** Skip wiping an in-progress restored session when applying server SRS. */
+    _sessionRestored: false
   }),
 
   getters: {
@@ -60,6 +71,18 @@ export const useLearningStore = defineStore('learning', {
 
     queueTotalCount: (state) => state.sessionQueue.length,
 
+    /** Daily study goal (new phrases); reviews are separate and do not fill this. */
+    studyGoalCount: (state) => clampDailyGoal(state.settings.dailyGoal),
+
+    studyCompletedCount: (state) => Number(state.sessionStats?.newLearned) || 0,
+
+    sessionReviewCount: (state) => state.sessionQueue.filter((p) => p.isReview).length,
+
+    isCurrentReview: (state) => {
+      const item = state.sessionQueue[state.currentSessionIndex];
+      return !!item?.isReview;
+    },
+
     newPhrasesCount: (state) => state.phrases.filter((p) => p.stage_srs === 0).length,
 
     dueReviewsCount: (state) => {
@@ -68,6 +91,8 @@ export const useLearningStore = defineStore('learning', {
     },
 
     allReviewedCount: (state) => state.phrases.filter((p) => (p.review_count || 0) > 0 || p.stage_srs > 0).length,
+
+    masteredCount: (state) => state.phrases.filter((p) => (Number(p.stage_srs) || 0) >= 3).length,
 
     deconstructedPhrasesCount: (state) => state.phrases.filter((p) => p.is_deconstructed).length,
 
@@ -145,9 +170,15 @@ export const useLearningStore = defineStore('learning', {
       }
 
       try {
-        this.startNewSession();
+        const restored = await this.tryRestoreSession();
+        if (!restored) {
+          this.startNewSession();
+        }
       } catch (err) {
-        console.warn('startNewSession error:', err);
+        console.warn('session restore/start error:', err);
+        try {
+          this.startNewSession();
+        } catch (_) {}
       }
 
       try {
@@ -267,7 +298,12 @@ export const useLearningStore = defineStore('learning', {
           await db.phrases.update(phrase.id, patch);
         }
 
-        this.startNewSession();
+        this.refreshSessionQueueFromPhrases();
+        if (!this._sessionRestored) {
+          this.startNewSession();
+        } else {
+          await this.persistActiveSession();
+        }
       } catch (err) {
         console.warn('Failed to apply server SRS progress:', err);
       }
@@ -305,7 +341,7 @@ export const useLearningStore = defineStore('learning', {
       try {
         if (db && db.settings) {
           const savedDailyGoal = await db.settings.get('dailyGoal');
-          if (savedDailyGoal) this.settings.dailyGoal = Number(savedDailyGoal.value) || 5;
+          if (savedDailyGoal) this.settings.dailyGoal = clampDailyGoal(savedDailyGoal.value);
 
           const savedMode = await db.settings.get('trainingMode');
           if (savedMode) this.settings.trainingMode = savedMode.value;
@@ -330,10 +366,11 @@ export const useLearningStore = defineStore('learning', {
     },
 
     async updateSetting(key, value) {
-      this.settings[key] = value;
+      const next = key === 'dailyGoal' ? clampDailyGoal(value) : value;
+      this.settings[key] = next;
       try {
         if (db && db.settings) {
-          await db.settings.put({ key, value });
+          await db.settings.put({ key, value: next });
         }
       } catch (err) {
         console.warn('Dexie settings write error:', err);
@@ -343,9 +380,92 @@ export const useLearningStore = defineStore('learning', {
         this.setupReminderSchedule();
       }
 
-      // If training mode or daily goal changed, refresh session queue if user is at beginning
-      if ((key === 'trainingMode' || key === 'dailyGoal') && this.currentSessionIndex === 0) {
-        this.startNewSession();
+      // Changing daily goal / mode must rebuild a fresh (not started) session —
+      // including after restore of an older queue with a different size.
+      if (key === 'trainingMode' || key === 'dailyGoal') {
+        if (this.canSafelyRebuildSession()) {
+          this.startNewSession();
+        } else if (key === 'dailyGoal') {
+          // Mid-session: resize remaining queue toward the new goal
+          this.resizeSessionToGoal(next);
+        }
+      }
+
+      if (key === 'dailyGoal') {
+        this.syncDailyGoalToProfile(next);
+      }
+    },
+
+    canSafelyRebuildSession() {
+      return (
+        this.currentSessionIndex === 0 &&
+        (this.sessionStats?.completedCount || 0) === 0 &&
+        !this.sessionQueue.some((p) => p.awaitingRecall)
+      );
+    },
+
+    /**
+     * Trim or top-up today's queue when user changes dailyGoal mid-session.
+     * Study cards and review cards are capped separately by the daily goal.
+     */
+    resizeSessionToGoal(goal) {
+      const target = clampDailyGoal(goal);
+      const idx = this.currentSessionIndex;
+      const kept = [];
+      let studyKept = 0;
+      let reviewKept = 0;
+
+      for (let i = 0; i < this.sessionQueue.length; i += 1) {
+        const item = this.sessionQueue[i];
+        const pastOrCurrent = i <= idx;
+        if (item.isReview) {
+          if (pastOrCurrent || reviewKept < target) {
+            kept.push(item);
+            reviewKept += 1;
+          }
+        } else if (pastOrCurrent || studyKept < target) {
+          kept.push(item);
+          studyKept += 1;
+        }
+      }
+
+      // Top up study cards if under goal
+      if (studyKept < target) {
+        const seen = new Set(kept.map((p) => p.id));
+        for (const p of this.phrases) {
+          if (studyKept >= target) break;
+          if (seen.has(p.id)) continue;
+          if ((Number(p.stage_srs) || 0) > 0) continue;
+          kept.push({
+            ...p,
+            awaitingRecall: false,
+            isReview: false,
+            demotedThisSession: false
+          });
+          seen.add(p.id);
+          studyKept += 1;
+        }
+      }
+
+      this.sessionQueue = kept.length ? kept : this.sessionQueue;
+      if (this.currentSessionIndex >= this.sessionQueue.length) {
+        this.currentSessionIndex = Math.max(0, this.sessionQueue.length - 1);
+      }
+      this.persistActiveSession();
+    },
+
+    async syncDailyGoalToProfile(goal) {
+      try {
+        const { useAuthStore } = await import('./authStore.js');
+        const auth = useAuthStore();
+        if (auth.currentUser && !auth.currentUser.isGuest) {
+          const g = clampDailyGoal(goal);
+          if (Number(auth.currentUser.dailyGoal) !== g) {
+            await auth.updateProfile({ dailyGoal: g });
+          }
+        }
+      } catch (err) {
+        console.warn('syncDailyGoalToProfile:', err);
       }
     },
 
@@ -377,17 +497,14 @@ export const useLearningStore = defineStore('learning', {
      */
     startNewSession() {
       const now = Date.now();
-      const goal = Math.max(1, Number(this.settings.dailyGoal) || 5);
-      let queue = [];
+      const goal = clampDailyGoal(this.settings.dailyGoal);
 
       let availablePhrases = [...this.phrases];
 
-      // Filter by Category
       if (this.selectedCategory !== 'all') {
         availablePhrases = availablePhrases.filter((p) => p.category === this.selectedCategory);
       }
 
-      // Filter by Tag
       if (this.selectedTag !== 'all') {
         availablePhrases = availablePhrases.filter((p) => Array.isArray(p.tags) && p.tags.includes(this.selectedTag));
       }
@@ -396,63 +513,217 @@ export const useLearningStore = defineStore('learning', {
       const newPhrases = availablePhrases.filter((p) => p.stage_srs === 0);
       const futureReviews = availablePhrases.filter((p) => p.stage_srs > 0 && p.next_review > now);
 
+      let studyQueue = [];
+      let reviewQueue = [];
+
       if (this.settings.trainingMode === 'new') {
-        queue = newPhrases.slice(0, goal);
+        studyQueue = newPhrases.slice(0, goal);
       } else if (this.settings.trainingMode === 'review') {
-        if (dueReviews.length > 0) {
-          queue = dueReviews.slice(0, goal);
-        } else {
-          queue = futureReviews.slice(0, goal);
-        }
+        reviewQueue =
+          dueReviews.length > 0 ? dueReviews.slice(0, goal) : futureReviews.slice(0, goal);
       } else {
-        // 'mix' mode: combine due reviews and new phrases
-        const reviewsToTake = dueReviews.slice(0, Math.ceil(goal / 2));
-        const neededNew = Math.max(0, goal - reviewsToTake.length);
-        const newToTake = newPhrases.slice(0, neededNew);
-
-        queue = [...reviewsToTake, ...newToTake];
-
-        if (queue.length < goal && dueReviews.length > reviewsToTake.length) {
-          const extraReviews = dueReviews.slice(reviewsToTake.length, reviewsToTake.length + (goal - queue.length));
-          queue = [...queue, ...extraReviews];
-        }
-
-        if (queue.length < goal && newPhrases.length > newToTake.length) {
-          const extraNew = newPhrases.slice(newToTake.length, newToTake.length + (goal - queue.length));
-          queue = [...queue, ...extraNew];
-        }
-      }
-
-      // Fallback: If empty after filters, include whatever matches filter
-      if (queue.length === 0 && availablePhrases.length > 0) {
-        queue = availablePhrases.slice(0, goal);
-      }
-
-      // Deduplicate queue so that phrases never repeat!
-      const seen = new Set();
-      const uniqueQueue = [];
-      for (const p of queue) {
-        if (!seen.has(p.id)) {
-          seen.add(p.id);
-          uniqueQueue.push(p);
-        }
-      }
-
-      // If still fewer than goal, fill from remaining available phrases
-      if (uniqueQueue.length < goal && availablePhrases.length > uniqueQueue.length) {
-        for (const p of availablePhrases) {
-          if (!seen.has(p.id)) {
-            seen.add(p.id);
-            uniqueQueue.push(p);
-            if (uniqueQueue.length >= goal) break;
+        // mix: up to `goal` new + up to `goal` reviews (reviews do not fill the study quota)
+        studyQueue = newPhrases.slice(0, goal);
+        reviewQueue = dueReviews.slice(0, goal);
+        if (studyQueue.length === 0 && reviewQueue.length === 0 && availablePhrases.length > 0) {
+          studyQueue = availablePhrases.filter((p) => p.stage_srs === 0).slice(0, goal);
+          if (studyQueue.length === 0) {
+            reviewQueue = availablePhrases.filter((p) => p.stage_srs > 0).slice(0, goal);
           }
         }
       }
 
+      const seen = new Set();
+      const uniqueQueue = [];
+      const pushMarked = (p, isReview) => {
+        if (!p || seen.has(p.id)) return;
+        seen.add(p.id);
+        // Reviews open directly in recall (Проверить / Забыл only).
+        uniqueQueue.push({
+          ...p,
+          awaitingRecall: !!isReview,
+          isReview: !!isReview,
+          demotedThisSession: false
+        });
+      };
+
+      const maxLen = Math.max(studyQueue.length, reviewQueue.length);
+      for (let i = 0; i < maxLen; i += 1) {
+        if (i < reviewQueue.length) pushMarked(reviewQueue[i], true);
+        if (i < studyQueue.length) pushMarked(studyQueue[i], false);
+      }
+
       this.sessionQueue = uniqueQueue;
-      this.lastCompletedSession = [...uniqueQueue];
+      this.lastCompletedSession = uniqueQueue.map((p) => ({ ...p }));
       this.currentSessionIndex = 0;
-      this.sessionStats.completedCount = 0;
+      this.sessionDate = todayKey();
+      this._sessionRestored = false;
+      this.sessionStats = {
+        completedCount: 0,
+        newLearned: 0,
+        reviewsDone: 0,
+        deconstructedToday: 0
+      };
+      this.persistActiveSession();
+    },
+
+    sessionSnapshot() {
+      return {
+        date: this.sessionDate || todayKey(),
+        goal: clampDailyGoal(this.settings.dailyGoal),
+        index: this.currentSessionIndex,
+        stats: { ...this.sessionStats },
+        queue: this.sessionQueue.map((p) => ({
+          id: p.id,
+          awaitingRecall: !!p.awaitingRecall,
+          isReview: !!p.isReview,
+          demotedThisSession: !!p.demotedThisSession
+        })),
+        lastCompletedIds: (this.lastCompletedSession || []).map((p) => p.id)
+      };
+    },
+
+    async persistActiveSession() {
+      try {
+        if (!db?.settings) return;
+        await db.settings.put({ key: ACTIVE_SESSION_KEY, value: this.sessionSnapshot() });
+      } catch (err) {
+        console.warn('persistActiveSession error:', err);
+      }
+    },
+
+    refreshSessionQueueFromPhrases() {
+      if (!this.sessionQueue?.length) return;
+      this.sessionQueue = this.sessionQueue
+        .map((item) => {
+          const fresh = this.phrases.find((p) => p.id === item.id);
+          if (!fresh) return null;
+          return {
+            ...fresh,
+            awaitingRecall: !!item.awaitingRecall,
+            isReview: !!item.isReview,
+            demotedThisSession: !!item.demotedThisSession
+          };
+        })
+        .filter(Boolean);
+    },
+
+    async tryRestoreSession() {
+      try {
+        if (!db?.settings) return false;
+        const row = await db.settings.get(ACTIVE_SESSION_KEY);
+        const saved = row?.value;
+        if (!saved || !Array.isArray(saved.queue) || saved.queue.length === 0) return false;
+        if (saved.date !== todayKey()) return false;
+
+        const currentGoal = clampDailyGoal(this.settings.dailyGoal);
+        const savedGoal = clampDailyGoal(saved.goal ?? saved.queue.length);
+        // Reviews start with awaitingRecall=true; that is not "progress".
+        const noProgress =
+          (Number(saved.index) || 0) === 0 &&
+          (Number(saved.stats?.completedCount) || 0) === 0 &&
+          (Number(saved.stats?.reviewsDone) || 0) === 0 &&
+          !saved.queue.some((e) => e.demotedThisSession) &&
+          !saved.queue.some((e) => e.awaitingRecall && !e.isReview);
+
+        // Goal changed since last queue build and session not started → rebuild
+        if (noProgress && savedGoal !== currentGoal) {
+          return false;
+        }
+
+        const hydrated = [];
+        for (const entry of saved.queue) {
+          const fresh = this.phrases.find((p) => p.id === entry.id);
+          if (!fresh) continue;
+          const isReview =
+            entry.isReview != null ? !!entry.isReview : (Number(fresh.stage_srs) || 0) > 0;
+          const demotedThisSession = !!entry.demotedThisSession;
+          // Active review cards always stay in recall until forgotten → normal practice.
+          const awaitingRecall =
+            isReview && !demotedThisSession ? true : !!entry.awaitingRecall;
+          hydrated.push({
+            ...fresh,
+            awaitingRecall,
+            isReview,
+            demotedThisSession
+          });
+        }
+        if (hydrated.length === 0) return false;
+
+        // Soft-fix: study cards must not exceed daily goal
+        let queue = hydrated;
+        const studyInQueue = queue.filter((p) => !p.isReview).length;
+        if (noProgress && studyInQueue > currentGoal) {
+          return false;
+        }
+        if (!noProgress && studyInQueue > currentGoal && currentGoal >= 1) {
+          // Keep progress; drop unused study cards from the tail first
+          const idx = Math.min(Math.max(0, Number(saved.index) || 0), queue.length);
+          const kept = [];
+          let studyKept = 0;
+          for (let i = 0; i < queue.length; i += 1) {
+            const item = queue[i];
+            if (i < idx) {
+              kept.push(item);
+              if (!item.isReview) studyKept += 1;
+              continue;
+            }
+            if (!item.isReview) {
+              if (studyKept >= currentGoal) continue;
+              studyKept += 1;
+            } else {
+              const reviewCap = currentGoal;
+              const reviewsKept = kept.filter((p) => p.isReview).length;
+              if (reviewsKept >= reviewCap) continue;
+            }
+            kept.push(item);
+          }
+          queue = kept.length ? kept : queue.slice(0, Math.max(idx + 1, 1));
+        }
+
+        this.sessionQueue = queue;
+        this.currentSessionIndex = Math.min(
+          Math.max(0, Number(saved.index) || 0),
+          queue.length
+        );
+        this.sessionStats = {
+          completedCount: Number(saved.stats?.completedCount) || 0,
+          newLearned: Number(saved.stats?.newLearned) || 0,
+          reviewsDone: Number(saved.stats?.reviewsDone) || 0,
+          deconstructedToday: Number(saved.stats?.deconstructedToday) || 0
+        };
+        this.sessionDate = saved.date;
+        const lastIds = Array.isArray(saved.lastCompletedIds) ? saved.lastCompletedIds : queue.map((p) => p.id);
+        this.lastCompletedSession = lastIds
+          .map((id) => this.phrases.find((p) => p.id === id))
+          .filter(Boolean);
+        this._sessionRestored = true;
+        await this.persistActiveSession();
+        return true;
+      } catch (err) {
+        console.warn('tryRestoreSession error:', err);
+        return false;
+      }
+    },
+
+    /**
+     * Insert item into remaining queue (after current index).
+     * @param {object} item
+     * @param {{ skipImmediate?: boolean }} opts - if skipImmediate, never put as next card when possible
+     */
+    insertIntoRemainingQueue(item, { skipImmediate = false } = {}) {
+      const idx = this.currentSessionIndex;
+      if (this.sessionQueue.length === idx) {
+        this.sessionQueue.push(item);
+        return;
+      }
+      const minInsert = skipImmediate
+        ? Math.min(idx + 1, this.sessionQueue.length)
+        : idx;
+      const maxInsert = this.sessionQueue.length;
+      const span = Math.max(1, maxInsert - minInsert + 1);
+      const insertAt = minInsert + Math.floor(Math.random() * span);
+      this.sessionQueue.splice(insertAt, 0, item);
     },
 
     /**
@@ -470,6 +741,9 @@ export const useLearningStore = defineStore('learning', {
       }
       this.currentSessionIndex = 0;
       this.sessionStats.completedCount = 0;
+      this.sessionDate = todayKey();
+      this.sessionQueue = this.sessionQueue.map((p) => ({ ...p, awaitingRecall: false }));
+      this.persistActiveSession();
     },
 
     setCategoryFilter(category) {
@@ -559,33 +833,44 @@ export const useLearningStore = defineStore('learning', {
      * Skip current phrase: moves it to the end of the active queue without penalizing SRS
      */
     skipCurrentPhrase() {
-      if (this.sessionQueue.length <= 1) return;
+      if (this.sessionQueue.length <= 1) {
+        this.persistActiveSession();
+        return;
+      }
       const current = this.sessionQueue[this.currentSessionIndex];
       if (!current) return;
 
       this.sessionQueue.splice(this.currentSessionIndex, 1);
-      this.sessionQueue.push(current);
+      // Skip keeps practice status; mix among remaining (not always the end)
+      this.insertIntoRemainingQueue({ ...current, awaitingRecall: false }, { skipImmediate: true });
+      this.persistActiveSession();
     },
 
     /**
-     * After practice check/learn: mark for recall and put at end of queue.
-     * Recall must not open immediately — only when the card comes up again.
+     * After practice: mark for recall only. Card returns solely as recall check.
+     * On forget later it re-enters as a normal practice phrase.
      */
     queueForRecall() {
       const idx = this.currentSessionIndex;
       const current = this.sessionQueue[idx];
       if (!current) return;
 
+      // Already awaiting recall — do not re-queue as practice
+      if (current.awaitingRecall) return;
+
       const item = { ...current, awaitingRecall: true };
       this.sessionQueue.splice(idx, 1);
-      this.sessionQueue.push(item);
-      // Index stays: next phrase (if any) is now at idx.
-      // If this was the only card, it remains at idx with awaitingRecall.
+      this.insertIntoRemainingQueue(item, { skipImmediate: true });
+      this.persistActiveSession();
     },
 
     isCurrentAwaitingRecall() {
       const item = this.sessionQueue[this.currentSessionIndex];
       return !!item?.awaitingRecall;
+    },
+
+    isCurrentReviewCard() {
+      return !!this.sessionQueue[this.currentSessionIndex]?.isReview;
     },
 
     /**
@@ -646,18 +931,20 @@ export const useLearningStore = defineStore('learning', {
       });
 
       // Update queue item
-      if (this.sessionQueue[this.currentSessionIndex]) {
-        Object.assign(this.sessionQueue[this.currentSessionIndex], updatedData, {
+      const qItem = this.sessionQueue[this.currentSessionIndex];
+      const wasReview = !!qItem?.isReview || previousStage > 0;
+      if (qItem) {
+        Object.assign(qItem, updatedData, {
           awaitingRecall: false
         });
       }
 
-      // Stats
-      this.sessionStats.completedCount += 1;
-      if (previousStage === 0) {
-        this.sessionStats.newLearned += 1;
-      } else {
+      // Stats: only new study cards fill the daily goal counter
+      if (wasReview) {
         this.sessionStats.reviewsDone += 1;
+      } else {
+        this.sessionStats.completedCount += 1;
+        this.sessionStats.newLearned += 1;
       }
 
       // Award XP to weekly leaderboard
@@ -677,6 +964,7 @@ export const useLearningStore = defineStore('learning', {
 
       // Advance queue pointer — phrase leaves the active session path
       this.currentSessionIndex += 1;
+      this.persistActiveSession();
 
       return {
         deconstructed: isTrigger5thDay,
@@ -688,20 +976,90 @@ export const useLearningStore = defineStore('learning', {
     },
 
     /**
-     * Repeat phrase later in the current session (practice again, clear recall flag)
+     * Forgot during recall:
+     * - Review cards: demote SRS by 1 stage once, then become a normal practice card.
+     * - New study cards (post-memorize recall): no SRS change, re-queue as practice.
+     * Second forget of a demoted review in this session does not demote further.
+     */
+    async handleForgotInSession(phrase) {
+      if (!phrase) {
+        this.repeatInSession();
+        return;
+      }
+
+      const idx = this.currentSessionIndex;
+      const current = this.sessionQueue[idx];
+      if (!current || current.id !== phrase.id) {
+        this.repeatInSession();
+        return;
+      }
+
+      const previousStage = Number(current.stage_srs ?? phrase.stage_srs) || 0;
+      const wasReview = !!current.isReview;
+
+      if (wasReview && !current.demotedThisSession && previousStage > 0) {
+        const nextStage = Math.max(1, previousStage - 1);
+        const intervalMs = SRS_INTERVALS_MS[nextStage] || 3 * 24 * 60 * 60 * 1000;
+        const updatedData = {
+          stage_srs: nextStage,
+          next_review: Date.now() + intervalMs
+        };
+
+        await db.phrases.update(phrase.id, updatedData);
+        const localPhrase = this.phrases.find((p) => p.id === phrase.id);
+        if (localPhrase) Object.assign(localPhrase, updatedData);
+
+        Object.assign(current, updatedData, {
+          demotedThisSession: true
+        });
+
+        await this.syncPhraseSrsToServer(phrase.id, {
+          ...updatedData,
+          review_count: localPhrase?.review_count ?? phrase.review_count ?? 0,
+          is_deconstructed: localPhrase?.is_deconstructed ?? phrase.is_deconstructed ?? 0,
+          tags: localPhrase?.tags || phrase.tags
+        }, {
+          result: 'failure',
+          stageBefore: previousStage,
+          stageAfter: nextStage,
+          reviewCount: localPhrase?.review_count ?? phrase.review_count ?? 0
+        });
+      } else if (wasReview) {
+        current.demotedThisSession = true;
+      }
+
+      // After «Забыл» the card becomes a normal practice card for this session.
+      current.isReview = false;
+      current.awaitingRecall = false;
+
+      this.repeatInSession();
+    },
+
+    /**
+     * Forgot / repeat: clear recall + review flags and mix back as normal practice.
      */
     repeatInSession() {
       if (this.sessionQueue.length <= 1) {
         const only = this.sessionQueue[this.currentSessionIndex];
-        if (only) only.awaitingRecall = false;
+        if (only) {
+          only.awaitingRecall = false;
+          only.isReview = false;
+        }
+        this.persistActiveSession();
         return;
       }
       const current = this.sessionQueue[this.currentSessionIndex];
       if (!current) return;
 
-      const item = { ...current, awaitingRecall: false };
+      const item = {
+        ...current,
+        awaitingRecall: false,
+        isReview: false,
+        demotedThisSession: !!current.demotedThisSession
+      };
       this.sessionQueue.splice(this.currentSessionIndex, 1);
-      this.sessionQueue.push(item);
+      this.insertIntoRemainingQueue(item, { skipImmediate: true });
+      this.persistActiveSession();
     },
 
     /**
@@ -862,9 +1220,13 @@ export const useLearningStore = defineStore('learning', {
     async resetAllData() {
       await db.phrases.clear();
       await db.dictionary_words.clear();
+      try {
+        await db.settings.delete(ACTIVE_SESSION_KEY);
+      } catch (_) {}
       await initDatabase();
       await this.loadAllPhrases();
       await this.loadDictionary();
+      this._sessionRestored = false;
       this.startNewSession();
     }
   }

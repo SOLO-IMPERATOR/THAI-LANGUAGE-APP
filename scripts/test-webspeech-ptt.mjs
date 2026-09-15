@@ -1,5 +1,5 @@
 /**
- * Unit tests for Web Speech PTT lifecycle.
+ * Unit tests for Web Speech PTT lifecycle (linear, no mid-hold restarts).
  * Run: node scripts/test-webspeech-ptt.mjs
  */
 
@@ -89,6 +89,7 @@ async function testHoldStartStopOnce() {
   resetFake();
   speechService.abortRecognitionHard();
   speechService._sttGate = Promise.resolve();
+  speechService._sttLastEndedAt = 0;
   const ends = [];
   const handle = speechService.startThaiRecognition({
     onEnd: (text, meta) => ends.push({ text, meta })
@@ -99,78 +100,63 @@ async function testHoldStartStopOnce() {
   handle.stop();
   await flush(80);
   assert(FakeRecognition.stopCount === 1, 'should stop once');
-  assert(FakeRecognition.startCount === 1, 'must NOT loop-restart after stop');
+  assert(FakeRecognition.startCount === 1, 'must NOT restart after stop');
   assert(ends.length === 1, 'onEnd once');
   assert(ends[0].text.includes('สวัสดี'), 'transcript kept');
   console.log('✓ hold start/stop once');
 }
 
-async function testPrematureEndRetriesOnceWhileHeld() {
+async function testPrematureEndDoesNotRestart() {
   resetFake();
   speechService.abortRecognitionHard();
   speechService._sttGate = Promise.resolve();
-  let held = true;
+  speechService._sttLastEndedAt = 0;
   const ends = [];
   speechService.startThaiRecognition({
-    wantHold: () => held,
     onEnd: (text, meta) => ends.push({ text, meta })
   });
   await waitStarted(1);
-  assert(FakeRecognition.startCount === 1, 'first start');
-  // Instant browser death while still held
   FakeRecognition.instances.at(-1).emitBrowserEnd();
-  await waitStarted(2);
-  assert(FakeRecognition.startCount === 2, 'one premature retry while held');
-  assert(ends.length === 0, 'onEnd deferred until retry finishes');
-  held = false;
-  FakeRecognition.instances.at(-1).emitBrowserEnd();
-  await flush(80);
-  assert(ends.length === 1, 'onEnd after release/end');
-  assert(FakeRecognition.startCount === 2, 'no further restarts');
-  console.log('✓ premature end retries once while held');
+  await flush(400);
+  assert(FakeRecognition.startCount === 1, 'no mid-hold restart');
+  assert(ends.length === 1, 'ended once');
+  console.log('✓ premature end does not restart');
 }
 
-async function testLateBrowserEndNoRestart() {
+async function testIdleStartIsImmediate() {
   resetFake();
   speechService.abortRecognitionHard();
   speechService._sttGate = Promise.resolve();
-  let held = true;
-  const ends = [];
-  speechService.startThaiRecognition({
-    wantHold: () => held,
-    onEnd: (text, meta) => ends.push({ text, meta })
-  });
+  speechService._sttLastEndedAt = 0;
+  const t0 = Date.now();
+  speechService.startThaiRecognition({ onEnd: () => {} });
   await waitStarted(1);
-  // Simulate longer session then browser silence timeout
-  await flush(800);
-  FakeRecognition.instances.at(-1).emitBrowserEnd();
-  await flush(300);
-  assert(FakeRecognition.startCount === 1, 'no restart after long session end');
-  assert(ends.length === 1, 'ended');
-  console.log('✓ late browser end does not restart');
+  assert(Date.now() - t0 < 80, 'idle start should not wait settle');
+  console.log('✓ idle start is immediate');
 }
 
-async function testSessionsSerialized() {
+async function testSessionsSerializedWithSettle() {
   resetFake();
   speechService.abortRecognitionHard();
   speechService._sttGate = Promise.resolve();
+  speechService._sttLastEndedAt = 0;
   const h1 = speechService.startThaiRecognition({ onEnd: () => {} });
   await waitStarted(1);
   h1.stop();
-  await flush(20);
-  // Start immediately without waiting full gate — should still serialize
+  await flush(40);
+  // Start immediately after stop — must wait settle (~450ms), not pile starts
   const h2 = speechService.startThaiRecognition({ onEnd: () => {} });
-  await flush(20);
-  assert(FakeRecognition.startCount === 1, 'second start waits for gate');
-  await waitStarted(2);
+  await flush(80);
+  assert(FakeRecognition.startCount === 1, 'second start waits settle');
+  await waitStarted(2, 2000);
   assert(FakeRecognition.startCount === 2, 'second start after settle');
   h2.stop();
   await flush(80);
-  console.log('✓ sessions are serialized (no start-while-closing)');
+  console.log('✓ sessions serialized with settle between holds');
 }
 
 await testHoldStartStopOnce();
-await testPrematureEndRetriesOnceWhileHeld();
-await testLateBrowserEndNoRestart();
-await testSessionsSerialized();
+await testPrematureEndDoesNotRestart();
+await testIdleStartIsImmediate();
+await testSessionsSerializedWithSettle();
 console.log('\nAll Web Speech PTT tests passed.');

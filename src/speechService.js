@@ -23,6 +23,8 @@ class SpeechService {
     this._sttRestartTimer = null;
     this._sttRestartsThisHold = 0;
     this._sttGate = Promise.resolve();
+    /** Timestamp of last STT onend — used to settle mic without mid-hold restarts. */
+    this._sttLastEndedAt = 0;
 
     if (this.synth) {
       this.initVoices();
@@ -324,22 +326,18 @@ class SpeechService {
   }
 
   /**
-   * Push-to-talk Thai STT (Web Speech API).
+   * Push-to-talk Thai STT (Web Speech API) — one linear session, no mid-hold restarts.
    *
-   * Chrome/Android quirks we handle:
-   * 1) Starting while a previous session is still closing → start beep then instant end.
-   *    Fix: serialize sessions; wait ~150ms after previous onend before new start.
-   * 2) Occasional premature onend right after onstart while finger still held.
-   *    Fix: at most ONE silent retry if session lived < 700ms and wantHold() is true.
-   * 3) Never loop-restart (that causes endless mic beeps).
+   * Chrome/Android: starting while the previous mic is still closing causes
+   * "beep → instant end". We only wait out that settle window between holds;
+   * once listening starts we never restart (user is already speaking).
    */
   startThaiRecognition({
     onResult,
     onError,
     onEnd,
     onStart,
-    continuous = true,
-    wantHold = null
+    continuous = true
   } = {}) {
     if (!this.isSpeechRecognitionSupported()) {
       const err = new Error('Распознавание речи не поддерживается браузером. Рекомендуется Chrome или Safari.');
@@ -347,15 +345,18 @@ class SpeechService {
       return null;
     }
 
+    // TTS and STT fight for the same mic — stop speech before opening recognition
+    this.stopSpeaking();
+
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    /** Min gap after previous onend before a new start (Chrome mic release). */
+    const SETTLE_AFTER_END_MS = 450;
     let recognition = null;
     let finalTranscript = '';
     let lastHeard = '';
     let intentionalStop = false;
     let started = false;
     let finished = false;
-    let startedAt = 0;
-    let prematureRetries = 0;
     let settleResolve = null;
 
     const prevGate = this._sttGate || Promise.resolve();
@@ -375,12 +376,12 @@ class SpeechService {
       if (finished) return;
       finished = true;
       this.isListening = false;
+      this._sttLastEndedAt = Date.now();
       if (this.activeRecognition === recognition) this.activeRecognition = null;
       recognition = null;
       const text = (finalTranscript || lastHeard || '').trim();
       if (onEnd) onEnd(text, { intentional: intentionalStop, started });
-      // Let Chrome fully drop the mic before the next hold
-      setTimeout(releaseGate, 160);
+      releaseGate();
     };
 
     const bindRecognition = (rec) => {
@@ -392,7 +393,6 @@ class SpeechService {
 
       rec.onstart = () => {
         started = true;
-        startedAt = Date.now();
         this.isListening = true;
         this.activeRecognition = rec;
         if (onStart) onStart();
@@ -420,6 +420,7 @@ class SpeechService {
 
       rec.onerror = (event) => {
         const errName = event?.error || '';
+        // Ignore transient errors; do not restart — session stays until stop/onend
         if (errName === 'no-speech' || errName === 'aborted') return;
         if (errName === 'not-allowed' || errName === 'service-not-allowed') {
           intentionalStop = true;
@@ -432,50 +433,23 @@ class SpeechService {
       rec.onend = () => {
         if (this.activeRecognition === rec) this.activeRecognition = null;
         this.isListening = false;
-
-        const livedMs = startedAt ? Date.now() - startedAt : 0;
-        const stillHeld = typeof wantHold === 'function' && wantHold();
-        // Instant death right after start (or before onstart) while user still holds → one retry
-        if (
-          !intentionalStop &&
-          !finished &&
-          stillHeld &&
-          prematureRetries < 1 &&
-          (!startedAt || livedMs < 700)
-        ) {
-          prematureRetries += 1;
-          setTimeout(() => {
-            if (intentionalStop || finished || !(typeof wantHold === 'function' && wantHold())) {
-              finish();
-              return;
-            }
-            try {
-              const next = new SpeechRec();
-              bindRecognition(next);
-              next.start();
-              this.activeRecognition = next;
-            } catch (err) {
-              if (onError) onError(err);
-              finish();
-            }
-          }, 220);
-          return;
-        }
-
+        // Linear: never restart mid-hold
         finish();
       };
     };
 
-    const startWhenReady = () => {
+    const startNow = () => {
       if (intentionalStop || finished) {
         releaseGate();
         return;
       }
-      // Soft-clear leftover without abort-storm
       if (this.activeRecognition) {
         try {
           this.activeRecognition.onend = null;
-          this.activeRecognition.abort?.();
+          this.activeRecognition.onresult = null;
+          this.activeRecognition.onerror = null;
+          this.activeRecognition.onstart = null;
+          this.activeRecognition.stop?.();
         } catch (_) {}
         this.activeRecognition = null;
       }
@@ -485,7 +459,7 @@ class SpeechService {
         rec.start();
         this.activeRecognition = rec;
       } catch (e) {
-        // InvalidStateError: retry once after settle
+        // InvalidStateError: one delayed attempt only (previous engine not ready)
         setTimeout(() => {
           if (intentionalStop || finished) {
             releaseGate();
@@ -500,15 +474,23 @@ class SpeechService {
             if (onError) onError(err2);
             finish();
           }
-        }, 300);
+        }, SETTLE_AFTER_END_MS);
       }
     };
 
-    // Wait until previous session fully released the mic
+    // Wait previous session, then only the remaining settle time (0 if mic already free)
     prevGate
       .catch(() => {})
-      .then(() => new Promise((r) => setTimeout(r, 120)))
-      .then(startWhenReady);
+      .then(() => {
+        const elapsed = Date.now() - (this._sttLastEndedAt || 0);
+        const waitMs =
+          this._sttLastEndedAt && elapsed < SETTLE_AFTER_END_MS
+            ? SETTLE_AFTER_END_MS - elapsed
+            : 0;
+        if (waitMs <= 0) return;
+        return new Promise((r) => setTimeout(r, waitMs));
+      })
+      .then(startNow);
 
     return {
       stop: () => {
@@ -525,7 +507,6 @@ class SpeechService {
             finish();
           }
         } else {
-          // start still queued — cancel
           finish();
         }
       },
@@ -558,6 +539,7 @@ class SpeechService {
     }
     // Reset gate so a hard abort never leaves start() permanently blocked
     this._sttGate = Promise.resolve();
+    this._sttLastEndedAt = Date.now();
     if (!rec) return;
     try {
       rec.onstart = null;
