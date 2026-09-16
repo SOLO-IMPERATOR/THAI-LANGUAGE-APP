@@ -7,7 +7,7 @@
       class="w-full max-w-lg bg-white rounded-[32px] border border-slate-100 p-6 sm:p-8 shadow-2xl text-slate-900 my-8 max-h-[92vh] overflow-y-auto relative"
     >
       <button
-        v-if="authStore.isAuthenticated"
+        v-if="authStore.currentUser"
         @click="authStore.closeAuth()"
         type="button"
         title="Закрыть окно"
@@ -19,11 +19,31 @@
       <div class="text-center mb-5">
         <ElephantLogo container-class="w-14 h-14 mx-auto mb-3 shadow-lg shadow-indigo-200" icon-class="w-8 h-8" />
         <h2 class="text-xl sm:text-2xl font-black tracking-tight text-slate-900">
-          {{ headerИTitle }}
+          {{ headerTitle }}
         </h2>
         <p class="text-xs sm:text-sm text-slate-500 mt-1 max-w-sm mx-auto">
           {{ headerSubtitle }}
         </p>
+      </div>
+
+      <!-- Guest entry (top of registration) -->
+      <div v-if="mode === 'register'" class="mb-5">
+        <button
+          type="button"
+          @click="handleContinueAsGuest"
+          :disabled="isSubmitting"
+          class="w-full h-12 rounded-2xl border-2 border-dashed border-teal-300 bg-teal-50/80 hover:bg-teal-50 text-teal-900 font-black text-xs uppercase tracking-wider transition active:scale-[0.99] cursor-pointer disabled:opacity-60"
+        >
+          Войти как гость
+        </button>
+        <p class="mt-2 text-[11px] text-slate-500 text-center leading-relaxed">
+          Прогресс сохранится только на этом устройстве. Зарегистрируйтесь позже, чтобы перенести его в аккаунт.
+        </p>
+        <div class="my-4 flex items-center gap-3">
+          <div class="h-px flex-1 bg-slate-200" />
+          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">или создайте аккаунт</span>
+          <div class="h-px flex-1 bg-slate-200" />
+        </div>
       </div>
 
       <!-- Wizard steps (register only) -->
@@ -547,10 +567,13 @@ async function handleSubmit() {
 
       if (user.dailyGoal) {
         await learningStore.updateSetting('dailyGoal', clampDailyGoal(user.dailyGoal));
-        learningStore.startNewSession();
+        // Preserve migrated local queue; only rebuild if empty/no progress.
+        if (learningStore.isSessionNoProgress()) {
+          learningStore.startNewSession();
+        }
       }
 
-      successMessage.value = 'Регистрация прошла успешно!';
+      successMessage.value = 'Регистрация прошла успешно! Прогресс с устройства перенесён в аккаунт.';
       registerStep.value = 1;
     } else {
       const user = await authStore.loginWithEmail(form.email, form.password);
@@ -561,6 +584,20 @@ async function handleSubmit() {
     }
   } catch (err) {
     errorMessage.value = err.message || 'Произошла ошибка. Пожалуйста, попробуйте снова.';
+  } finally {
+    isSubmitting.value = false;
+  }
+}
+
+async function handleContinueAsGuest() {
+  errorMessage.value = '';
+  successMessage.value = '';
+  isSubmitting.value = true;
+  try {
+    authStore.continueAsGuest({ gender: form.gender || learningStore.userGender });
+    successMessage.value = 'Вы вошли как гость. Прогресс хранится локально на этом устройстве.';
+  } catch (err) {
+    errorMessage.value = err.message || 'Не удалось войти как гость.';
   } finally {
     isSubmitting.value = false;
   }

@@ -368,6 +368,42 @@ export const useLearningStore = defineStore('learning', {
       }
     },
 
+    /**
+     * Upload local Dexie SRS (guest / anonymous) to the newly registered user account.
+     */
+    async migrateLocalProgressToServer(userId) {
+      if (!userId) return { uploaded: 0 };
+      const localStudied = this.phrases.filter(
+        (p) => (Number(p.stage_srs) || 0) > 0 || (Number(p.review_count) || 0) > 0 || p.is_deconstructed
+      );
+      if (localStudied.length === 0) return { uploaded: 0 };
+
+      try {
+        const res = await fetch(`/api/users/${encodeURIComponent(userId)}/srs/bulk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            progress: localStudied.map((p) => ({
+              phraseId: p.id,
+              stage_srs: p.stage_srs || 0,
+              review_count: p.review_count || 0,
+              next_review: p.next_review || 0,
+              is_deconstructed: p.is_deconstructed || 0,
+              tags: p.tags || []
+            }))
+          })
+        });
+        if (!res.ok) {
+          console.warn('migrateLocalProgressToServer status:', res.status);
+          return { uploaded: 0 };
+        }
+        return { uploaded: localStudied.length };
+      } catch (err) {
+        console.warn('migrateLocalProgressToServer error:', err);
+        return { uploaded: 0 };
+      }
+    },
+
     async applyServerSrsProgress(userId) {
       if (!userId) return;
 
@@ -1216,11 +1252,11 @@ export const useLearningStore = defineStore('learning', {
         this.sessionStats.newLearned = this.dailyProgress.newLearnedIds.length;
       }
 
-      // Award XP to weekly leaderboard
+      // Award XP to weekly leaderboard (registered users only)
       try {
         const { useAuthStore } = await import('./authStore.js');
         const auth = useAuthStore();
-        if (auth.currentUser) {
+        if (auth.currentUser && !auth.currentUser.isGuest) {
           const currentScore = (auth.currentUser.weeklyScore || 0) + 10;
           await auth.updateProfile({ weeklyScore: currentScore });
           const { useCommunityStore } = await import('./communityStore.js');

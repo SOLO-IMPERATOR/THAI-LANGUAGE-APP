@@ -68,6 +68,27 @@
         </button>
       </div>
 
+      <!-- Guest / unauthenticated lock -->
+      <div
+        v-if="!authStore.canUseCommunity"
+        class="flex-1 flex flex-col items-center justify-center text-center px-4 py-10"
+      >
+        <div class="w-14 h-14 rounded-3xl bg-amber-50 text-amber-600 flex items-center justify-center text-2xl mb-4">🔒</div>
+        <h3 class="text-lg font-black text-slate-900 tracking-tight">Доступно после регистрации</h3>
+        <p class="text-xs text-slate-500 mt-2 max-w-sm leading-relaxed">
+          Рейтинг, друзья и создание комнат доступны только зарегистрированным пользователям. Зарегистрируйтесь — локальный прогресс перенесётся в аккаунт.
+        </p>
+        <button
+          type="button"
+          class="mt-5 px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black uppercase tracking-wider cursor-pointer"
+          @click="promptRegisterFromCommunity"
+        >
+          Зарегистрироваться
+        </button>
+      </div>
+
+      <template v-else>
+
       <!-- Feedback Toast Banner -->
       <div
         v-if="noticeMessage"
@@ -815,6 +836,7 @@
           </div>
         </div>
       </div>
+      </template>
     </div>
 
     <!-- Public / Private User Profile Preview Card (Requirement 4) -->
@@ -1013,10 +1035,20 @@ const newRoomIsPublic = ref(true);
 const newRoomRequireApproval = ref(false);
 
 function setTab(tab) {
+  if (!authStore.canUseCommunity) {
+    authStore.openAuth('register');
+    communityStore.closeCommunity();
+    return;
+  }
   communityStore.setActiveTab(tab);
   if (tab === 'leaderboard') {
     void communityStore.fetchUsersFromServer();
   }
+}
+
+function promptRegisterFromCommunity() {
+  communityStore.closeCommunity();
+  authStore.openAuth('register');
 }
 
 // User profile preview (Requirement 4)

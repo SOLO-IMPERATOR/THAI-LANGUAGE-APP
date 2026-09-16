@@ -17,13 +17,18 @@ export const useAuthStore = defineStore('auth', {
 
   getters: {
     isAuthenticated: (state) => !!state.currentUser && !state.currentUser.isGuest,
+    isGuest: (state) => !!state.currentUser?.isGuest,
+    /** Ratings / friends / rooms — registered users only. */
+    canUseCommunity: (state) => !!state.currentUser && !state.currentUser.isGuest,
     userFullName: (state) => {
       if (!state.currentUser) return '';
+      if (state.currentUser.isGuest) return 'Гость';
       const name = `${state.currentUser.firstName || ''} ${state.currentUser.lastName || ''}`.trim();
       return name || state.currentUser.email || 'Пользователь';
     },
     userInitials: (state) => {
       if (!state.currentUser) return 'U';
+      if (state.currentUser.isGuest) return 'Г';
       const f = (state.currentUser.firstName || '').charAt(0).toUpperCase();
       const l = (state.currentUser.lastName || '').charAt(0).toUpperCase();
       return (f + l) || state.currentUser.email?.charAt(0).toUpperCase() || 'U';
@@ -51,18 +56,23 @@ export const useAuthStore = defineStore('auth', {
         const cached = localStorage.getItem(STORAGE_KEY);
         if (cached) {
           const parsed = JSON.parse(cached);
-          if (parsed && (parsed.isGuest || parsed.email === 'guest@local' || parsed.authProvider === 'guest')) {
-            localStorage.removeItem(STORAGE_KEY);
-            this.currentUser = null;
-          } else if (parsed && parsed.email) {
-            this.currentUser = parsed;
-            // Sync user gender into learning store
+          if (parsed && (parsed.isGuest || parsed.authProvider === 'guest')) {
+            this.currentUser = {
+              ...parsed,
+              isGuest: true,
+              authProvider: 'guest',
+              email: parsed.email || 'guest@local'
+            };
             try {
               const learning = useLearningStore();
-              if (parsed.gender) {
-                learning.setUserGender(parsed.gender);
-              }
-            } catch (err) {}
+              if (parsed.gender) learning.setUserGender(parsed.gender);
+            } catch (_) {}
+          } else if (parsed && parsed.email) {
+            this.currentUser = parsed;
+            try {
+              const learning = useLearningStore();
+              if (parsed.gender) learning.setUserGender(parsed.gender);
+            } catch (_) {}
           }
         }
 
@@ -72,6 +82,57 @@ export const useAuthStore = defineStore('auth', {
       } catch (e) {
         console.warn('Auth init warning:', e);
       }
+    },
+
+    /**
+     * Local-only guest session: progress stays in Dexie until registration migrates it.
+     */
+    continueAsGuest({ gender } = {}) {
+      const g =
+        gender === 'male' || gender === 'female'
+          ? gender
+          : (typeof localStorage !== 'undefined'
+            ? localStorage.getItem('thai_frazovik_gender') || 'female'
+            : 'female');
+
+      let guestId = null;
+      try {
+        guestId = localStorage.getItem('thai_frazovik_guest_id');
+      } catch (_) {}
+      if (!guestId) {
+        guestId = `guest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        try {
+          localStorage.setItem('thai_frazovik_guest_id', guestId);
+        } catch (_) {}
+      }
+
+      const guestUser = {
+        id: guestId,
+        firstName: 'Гость',
+        lastName: '',
+        email: 'guest@local',
+        password: '',
+        gender: g,
+        dailyGoal: 5,
+        authProvider: 'guest',
+        isGuest: true,
+        cityInThailand: '',
+        stayDuration: '',
+        avatarUrl: g === 'female' ? '👩' : '👨',
+        isPrivate: true,
+        weeklyScore: 0,
+        xp: 0,
+        level: 1,
+        streak: 1,
+        createdAt: Date.now()
+      };
+
+      this.setCurrentUser(guestUser);
+      try {
+        const learning = useLearningStore();
+        learning.setUserGender(g);
+      } catch (_) {}
+      return guestUser;
     },
 
     /**
@@ -175,17 +236,21 @@ export const useAuthStore = defineStore('auth', {
         console.warn('Network registration sync error:', netErr);
       }
 
-      // 3. Update active session and learning gender
+      // 3. Migrate local (guest) SRS → server, then bind session
       this.setCurrentUser(newUser);
 
       try {
         const learningStore = useLearningStore();
         learningStore.setUserGender(gender);
+        await learningStore.migrateLocalProgressToServer(newUser.id);
         await learningStore.applyServerSrsProgress(newUser.id);
+        // Keep existing local queue/daily progress — do not wipe after migrate.
         if (learningStore.isSessionNoProgress()) {
           learningStore.startNewSession();
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn('Guest→account migration warning:', e);
+      }
 
       // 4. Update communityStore immediately
       try {
@@ -202,6 +267,7 @@ export const useAuthStore = defineStore('auth', {
           stayDuration: newUser.stayDuration,
           level: newUser.level,
           xp: newUser.xp,
+          weeklyScore: newUser.weeklyScore || 0,
           streak: newUser.streak,
           registeredAt: new Date().toISOString(),
           isCurrentUser: true,
@@ -218,6 +284,10 @@ export const useAuthStore = defineStore('auth', {
       } catch (pwaErr) {
         console.warn('PWA native trigger warning:', pwaErr);
       }
+
+      try {
+        localStorage.removeItem('thai_frazovik_guest_id');
+      } catch (_) {}
 
       return newUser;
     },
@@ -285,11 +355,22 @@ export const useAuthStore = defineStore('auth', {
      */
     async updateProfile(updates) {
       if (!this.currentUser) return;
-      
+
       const updatedUser = {
         ...this.currentUser,
         ...updates
       };
+
+      // Guests stay local-only until registration.
+      if (this.currentUser.isGuest) {
+        if (updates.gender) {
+          try {
+            useLearningStore().setUserGender(updates.gender);
+          } catch (_) {}
+        }
+        this.setCurrentUser(updatedUser);
+        return updatedUser;
+      }
 
       if (this.currentUser.id && db.users) {
         try {
@@ -360,6 +441,18 @@ export const useAuthStore = defineStore('auth', {
         console.warn('Could not save user to storage:', e);
       }
       this.isAuthModalOpen = false;
+      // Guests do not join community roster / social polling.
+      if (user?.isGuest) {
+        import('./communityStore.js')
+          .then(({ useCommunityStore }) => {
+            const community = useCommunityStore();
+            if (community._pollTimer) clearInterval(community._pollTimer);
+            community.pollUserId = null;
+            community.isCommunityModalOpen = false;
+          })
+          .catch(() => {});
+        return;
+      }
       import('./communityStore.js')
         .then(({ useCommunityStore }) => {
           const community = useCommunityStore();
@@ -370,16 +463,20 @@ export const useAuthStore = defineStore('auth', {
     },
 
     logout() {
+      const wasGuest = !!this.currentUser?.isGuest;
       this.currentUser = null;
       try {
         localStorage.removeItem(STORAGE_KEY);
       } catch (e) {
         console.warn('Storage cleanup warning:', e);
       }
-      try {
-        const learningStore = useLearningStore();
-        learningStore.resetLocalSrsToCanonical();
-      } catch (e) {}
+      // Do not wipe SRS when leaving a guest session to register — progress migrates.
+      if (!wasGuest) {
+        try {
+          const learningStore = useLearningStore();
+          learningStore.resetLocalSrsToCanonical();
+        } catch (e) {}
+      }
       import('./communityStore.js')
         .then(({ useCommunityStore }) => {
           const community = useCommunityStore();
@@ -399,7 +496,8 @@ export const useAuthStore = defineStore('auth', {
     },
 
     closeAuth() {
-      if (this.isAuthenticated) {
+      // Allow close for guests and registered users; keep modal if nobody is signed in.
+      if (this.currentUser) {
         this.isAuthModalOpen = false;
       }
     },

@@ -793,7 +793,6 @@ export const useCommunityStore = defineStore('community', {
         this.activeTab = tab;
       }
       this.isCommunityModalOpen = true;
-      // Refetch roster/scores so other participants' XP is fresh when opening.
       void this.fetchUsersFromServer();
       void this.syncSocial();
     },

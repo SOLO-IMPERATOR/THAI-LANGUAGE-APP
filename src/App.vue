@@ -41,32 +41,31 @@
 
         <!-- Header Actions: Leaderboard, User Profile (ЛК) & Settings -->
         <div class="flex items-center gap-2 sm:gap-2.5">
-          <!-- Weekly Leaderboard Button -->
+          <!-- Weekly Leaderboard Button (registered only) -->
           <button
-            @click="communityStore.openCommunity('leaderboard')"
+            @click="openCommunityOrPrompt('leaderboard')"
             type="button"
             class="flex items-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/80 rounded-2xl text-xs font-bold transition shadow-xs cursor-pointer active:scale-95"
-            title="Недельный рейтинг и сообщество"
+            :title="authStore.canUseCommunity ? 'Недельный рейтинг и сообщество' : 'Доступно после регистрации'"
           >
             <span class="text-base leading-none">🏆</span>
             <span class="hidden sm:inline">Рейтинг</span>
             <span
-              v-if="authStore.currentUser?.weeklyScore"
+              v-if="authStore.isAuthenticated && authStore.currentUser?.weeklyScore"
               class="bg-amber-200/80 text-amber-900 px-1.5 py-0.5 rounded-lg text-[10px] font-black"
             >
               {{ authStore.currentUser.weeklyScore }} XP
             </span>
           </button>
 
-          <!-- User Profile Button (Opens Personal Account / ЛК) -->
+          <!-- User Profile / Guest -->
           <button
             v-if="authStore.currentUser"
-            @click="authStore.openProfile()"
+            @click="authStore.isGuest ? authStore.openAuth('register') : authStore.openProfile()"
             type="button"
             class="flex items-center gap-2.5 bg-white hover:bg-slate-50 px-3 py-1.5 rounded-2xl border border-slate-200 shadow-xs transition cursor-pointer group active:scale-95"
-            title="Открыть Личный кабинет"
+            :title="authStore.isGuest ? 'Зарегистрироваться для сохранения прогресса' : 'Открыть Личный кабинет'"
           >
-            <!-- User photo avatar or gradient initials -->
             <UserAvatar
               :name="authStore.userFullName"
               :email="authStore.currentUser.email"
@@ -82,7 +81,7 @@
                 {{ authStore.userFullName }}
               </div>
               <div class="text-[10px] text-slate-400 font-semibold leading-tight mt-0.5">
-                Личный кабинет
+                {{ authStore.isGuest ? 'Гостевой режим' : 'Личный кабинет' }}
               </div>
             </div>
 
@@ -94,7 +93,7 @@
           <!-- Login / Register button if not logged in -->
           <button
             v-else
-            @click="authStore.openAuth('login')"
+            @click="authStore.openAuth('register')"
             type="button"
             class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-2xl shadow-sm transition cursor-pointer"
           >
@@ -151,6 +150,38 @@
       </div>
 
       <div v-else>
+        <!-- Guest reminder: register to keep progress -->
+        <div
+          v-if="authStore.isGuest && showGuestReminder"
+          class="mb-6 p-4 rounded-3xl bg-gradient-to-r from-teal-50 via-emerald-50 to-indigo-50 border border-teal-200/80 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3"
+        >
+          <div class="text-left min-w-0">
+            <div class="text-sm font-black text-slate-900 tracking-tight">
+              Вы в гостевом режиме
+            </div>
+            <p class="text-xs text-slate-600 mt-1 leading-relaxed">
+              Прогресс хранится только на этом устройстве. Зарегистрируйтесь, чтобы сохранить его в аккаунте и открыть рейтинг, друзей и комнаты.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              @click="authStore.openAuth('register')"
+              class="px-4 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black uppercase tracking-wider shadow-sm transition active:scale-95 cursor-pointer"
+            >
+              Зарегистрироваться
+            </button>
+            <button
+              type="button"
+              @click="dismissGuestReminder"
+              class="px-3 py-2.5 rounded-2xl bg-white/80 hover:bg-white text-slate-600 border border-slate-200 text-xs font-bold transition cursor-pointer"
+              title="Скрыть до следующего захода"
+            >
+              Позже
+            </button>
+          </div>
+        </div>
+
         <!-- Gentle First-Time Gender Selector Banner -->
         <div
           v-if="!hasExplicitlyChosenGender"
@@ -420,7 +451,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { useLearningStore } from './useLearningStore.js';
 import { useAuthStore } from './authStore.js';
 import { useCommunityStore } from './communityStore.js';
@@ -445,6 +476,7 @@ const pwaStore = usePwaStore();
 const showSettings = ref(false);
 const showPhrasesCatalog = ref(false);
 const initError = ref(null);
+const showGuestReminder = ref(false);
 const hasExplicitlyChosenGender = ref(
   typeof localStorage !== 'undefined' && localStorage.getItem('thai_frazovik_gender_set') === 'true'
 );
@@ -455,6 +487,23 @@ async function quickInstall() {
     return;
   }
   await pwaStore.triggerNativePromptImmediately('header');
+}
+
+function openCommunityOrPrompt(tab = 'leaderboard') {
+  if (!authStore.canUseCommunity) {
+    authStore.openAuth('register');
+    return;
+  }
+  communityStore.openCommunity(tab);
+}
+
+function refreshGuestReminder() {
+  // Show on every app load while guest; «Позже» only hides until next visit.
+  showGuestReminder.value = !!authStore.isGuest;
+}
+
+function dismissGuestReminder() {
+  showGuestReminder.value = false;
 }
 
 function setGlobalGender(gender, markExplicit = true) {
@@ -481,12 +530,15 @@ async function startApp() {
   }
   try {
     await authStore.initAuth();
+    refreshGuestReminder();
   } catch (err) {
     console.warn('Auth init warning:', err);
   }
 
   try {
-    await communityStore.initCommunity(authStore.currentUser);
+    if (authStore.canUseCommunity) {
+      await communityStore.initCommunity(authStore.currentUser);
+    }
   } catch (err) {
     console.warn('Community init warning:', err);
   }
@@ -515,4 +567,11 @@ async function startApp() {
 onMounted(() => {
   startApp();
 });
+
+watch(
+  () => authStore.isGuest,
+  () => {
+    refreshGuestReminder();
+  }
+);
 </script>
