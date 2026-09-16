@@ -4,12 +4,17 @@ import { getGenderedPhrase } from './phrasesData.js';
 import { clampDailyGoal, DAILY_GOAL_DEFAULT } from './dailyGoal.js';
 
 const ACTIVE_SESSION_KEY = 'activeSession';
-/** Bump to force-rebuild stuck local queues after session-logic fixes (mix 3+3, reviews). */
-const SESSION_FORMAT = 3;
+const DAILY_PROGRESS_KEY = 'dailyProgress';
+/** Bump when session snapshot shape / daily-progress rules change. */
+const SESSION_FORMAT = 4;
 
 function todayKey() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function emptyDailyProgress(date = todayKey()) {
+  return { date, newLearnedIds: [], reviewsDone: 0 };
 }
 
 // SRS Interval map in milliseconds per user specification:
@@ -39,6 +44,11 @@ export const useLearningStore = defineStore('learning', {
     sessionQueue: [],
     currentSessionIndex: 0,
     sessionDate: '',
+    /** Fixed at session build: how many study / review cards were planned. */
+    sessionPlan: {
+      studyTotal: 0,
+      reviewTotal: 0
+    },
     isLoading: true,
     isInitialized: false,
     sessionStats: {
@@ -47,6 +57,8 @@ export const useLearningStore = defineStore('learning', {
       reviewsDone: 0,
       deconstructedToday: 0
     },
+    /** Survives new/repeat session and refresh until the next calendar day. */
+    dailyProgress: emptyDailyProgress(''),
     lastCompletedSession: [],
     selectedCategory: 'all',
     selectedTag: 'all',
@@ -76,9 +88,17 @@ export const useLearningStore = defineStore('learning', {
     /** Daily study goal (new phrases); reviews are separate and do not fill this. */
     studyGoalCount: (state) => clampDailyGoal(state.settings.dailyGoal),
 
-    studyCompletedCount: (state) => Number(state.sessionStats?.newLearned) || 0,
+    /** Unique new phrases credited today (persists across sessions until midnight). */
+    studyCompletedCount: (state) => {
+      if (state.dailyProgress?.date !== todayKey()) return 0;
+      return Array.isArray(state.dailyProgress.newLearnedIds)
+        ? state.dailyProgress.newLearnedIds.length
+        : 0;
+    },
 
-    sessionReviewCount: (state) => state.sessionQueue.filter((p) => p.isReview).length,
+    sessionStudyCount: (state) => Number(state.sessionPlan?.studyTotal) || 0,
+
+    sessionReviewCount: (state) => Number(state.sessionPlan?.reviewTotal) || 0,
 
     isCurrentReview: (state) => {
       const item = state.sessionQueue[state.currentSessionIndex];
@@ -89,7 +109,11 @@ export const useLearningStore = defineStore('learning', {
 
     dueReviewsCount: (state) => {
       const now = Date.now();
-      return state.phrases.filter((p) => p.stage_srs > 0 && p.next_review <= now).length;
+      return state.phrases.filter((p) => {
+        if ((Number(p.stage_srs) || 0) <= 0) return false;
+        const next = Number(p.next_review) || 0;
+        return next <= now;
+      }).length;
     },
 
     allReviewedCount: (state) => state.phrases.filter((p) => (p.review_count || 0) > 0 || p.stage_srs > 0).length,
@@ -166,6 +190,12 @@ export const useLearningStore = defineStore('learning', {
       }
 
       try {
+        await this.loadDailyProgress();
+      } catch (err) {
+        console.warn('loadDailyProgress error:', err);
+      }
+
+      try {
         this.setupReminderSchedule();
       } catch (err) {
         console.warn('setupReminderSchedule error:', err);
@@ -197,6 +227,91 @@ export const useLearningStore = defineStore('learning', {
 
       this.isInitialized = true;
       this.isLoading = false;
+    },
+
+    ensureDailyProgress() {
+      const d = todayKey();
+      if (this.dailyProgress?.date === d && Array.isArray(this.dailyProgress.newLearnedIds)) {
+        return;
+      }
+      this.dailyProgress = emptyDailyProgress(d);
+    },
+
+    async loadDailyProgress() {
+      try {
+        if (!db?.settings) {
+          this.dailyProgress = emptyDailyProgress();
+          return;
+        }
+        const row = await db.settings.get(DAILY_PROGRESS_KEY);
+        const saved = row?.value;
+        if (saved?.date === todayKey() && Array.isArray(saved.newLearnedIds)) {
+          this.dailyProgress = {
+            date: saved.date,
+            newLearnedIds: saved.newLearnedIds.map((id) => Number(id)).filter((id) => id > 0),
+            reviewsDone: Number(saved.reviewsDone) || 0
+          };
+        } else {
+          this.dailyProgress = emptyDailyProgress();
+          await this.persistDailyProgress();
+        }
+      } catch (err) {
+        console.warn('loadDailyProgress error:', err);
+        this.dailyProgress = emptyDailyProgress();
+      }
+    },
+
+    async persistDailyProgress() {
+      try {
+        if (!db?.settings) return;
+        this.ensureDailyProgress();
+        await db.settings.put({
+          key: DAILY_PROGRESS_KEY,
+          value: {
+            date: this.dailyProgress.date,
+            newLearnedIds: [...this.dailyProgress.newLearnedIds],
+            reviewsDone: Number(this.dailyProgress.reviewsDone) || 0
+          }
+        });
+      } catch (err) {
+        console.warn('persistDailyProgress error:', err);
+      }
+    },
+
+    /**
+     * Credit one new phrase toward today's daily goal (unique ids, capped at goal).
+     * @returns {boolean} whether it was newly credited
+     */
+    async creditDailyNewLearned(phraseId) {
+      this.ensureDailyProgress();
+      const id = Number(phraseId);
+      if (!id) return false;
+      const goal = clampDailyGoal(this.settings.dailyGoal);
+      if (this.dailyProgress.newLearnedIds.includes(id)) return false;
+      if (this.dailyProgress.newLearnedIds.length >= goal) return false;
+      this.dailyProgress.newLearnedIds.push(id);
+      this.sessionStats.newLearned = this.dailyProgress.newLearnedIds.length;
+      await this.persistDailyProgress();
+      return true;
+    },
+
+    async creditDailyReview() {
+      this.ensureDailyProgress();
+      this.dailyProgress.reviewsDone = (Number(this.dailyProgress.reviewsDone) || 0) + 1;
+      await this.persistDailyProgress();
+    },
+
+    /** True if phrase was previously studied (SRS stage advanced at least once). */
+    isLearnedPhrase(phrase) {
+      if (!phrase) return false;
+      return (Number(phrase.stage_srs) || 0) > 0;
+    },
+
+    isDueReviewPhrase(phrase, now = Date.now()) {
+      if (!this.isLearnedPhrase(phrase)) return false;
+      const next = Number(phrase.next_review) || 0;
+      // Legacy rows with stage>0 but next_review=0 are treated as due.
+      return next <= now;
     },
 
     async loadAllPhrases() {
@@ -401,12 +516,11 @@ export const useLearningStore = defineStore('learning', {
       }
     },
 
-    /** True when the user has not yet progressed in today's session. */
+    /** True when the user has not yet progressed in the current session queue. */
     isSessionNoProgress() {
       return (
         (Number(this.currentSessionIndex) || 0) === 0 &&
         (Number(this.sessionStats?.completedCount) || 0) === 0 &&
-        (Number(this.sessionStats?.newLearned) || 0) === 0 &&
         (Number(this.sessionStats?.reviewsDone) || 0) === 0 &&
         !this.sessionQueue.some((p) => p.demotedThisSession) &&
         !this.sessionQueue.some((p) => p.awaitingRecall && !p.isReview)
@@ -436,24 +550,36 @@ export const useLearningStore = defineStore('learning', {
             kept.push(item);
             reviewKept += 1;
           }
-        } else if (pastOrCurrent || studyKept < target) {
+        } else if (item.countsTowardDaily !== false && !item.demotedThisSession) {
+          if (pastOrCurrent || studyKept < target) {
+            kept.push(item);
+            studyKept += 1;
+          }
+        } else {
+          // Demoted re-learn cards stay in the session but outside the daily quota.
           kept.push(item);
-          studyKept += 1;
         }
       }
 
-      // Top up study cards if under goal
-      if (studyKept < target) {
+      // Top up study cards if under remaining daily slots
+      this.ensureDailyProgress();
+      const learnedToday = new Set(this.dailyProgress.newLearnedIds.map((id) => Number(id)));
+      const studyTarget = Math.max(0, target - learnedToday.size);
+      // recount studyKept only for countsTowardDaily
+      studyKept = kept.filter((p) => p.countsTowardDaily && !p.isReview).length;
+      if (studyKept < studyTarget) {
         const seen = new Set(kept.map((p) => p.id));
         for (const p of this.phrases) {
-          if (studyKept >= target) break;
+          if (studyKept >= studyTarget) break;
           if (seen.has(p.id)) continue;
           if ((Number(p.stage_srs) || 0) > 0) continue;
+          if (learnedToday.has(Number(p.id))) continue;
           kept.push({
             ...p,
             awaitingRecall: false,
             isReview: false,
-            demotedThisSession: false
+            demotedThisSession: false,
+            countsTowardDaily: true
           });
           seen.add(p.id);
           studyKept += 1;
@@ -461,6 +587,10 @@ export const useLearningStore = defineStore('learning', {
       }
 
       this.sessionQueue = kept.length ? kept : this.sessionQueue;
+      this.sessionPlan = {
+        studyTotal: this.sessionQueue.filter((p) => p.countsTowardDaily).length,
+        reviewTotal: this.sessionQueue.filter((p) => p.isReview).length
+      };
       if (this.currentSessionIndex >= this.sessionQueue.length) {
         this.currentSessionIndex = Math.max(0, this.sessionQueue.length - 1);
       }
@@ -506,11 +636,16 @@ export const useLearningStore = defineStore('learning', {
      * Build active session queue based on filters and mode:
      * - Filters: Category & Tag
      * - Mode: 'new', 'review', or 'mix'
-     * - Guarantee: phrases never repeat within the queue and prioritize unstudied phrases!
+     * - Study slots = remaining daily goal (already-credited phrases excluded)
+     * - Reviews = only previously learned phrases that are due (do not fill study quota)
+     * Daily progress is NOT reset here — it lasts until the next calendar day.
      */
     startNewSession() {
+      this.ensureDailyProgress();
       const now = Date.now();
       const goal = clampDailyGoal(this.settings.dailyGoal);
+      const learnedToday = new Set(this.dailyProgress.newLearnedIds.map((id) => Number(id)));
+      const studySlotsLeft = Math.max(0, goal - learnedToday.size);
 
       let availablePhrases = [...this.phrases];
 
@@ -522,26 +657,34 @@ export const useLearningStore = defineStore('learning', {
         availablePhrases = availablePhrases.filter((p) => Array.isArray(p.tags) && p.tags.includes(this.selectedTag));
       }
 
-      const dueReviews = availablePhrases.filter((p) => p.stage_srs > 0 && p.next_review <= now);
-      const newPhrases = availablePhrases.filter((p) => p.stage_srs === 0);
-      const futureReviews = availablePhrases.filter((p) => p.stage_srs > 0 && p.next_review > now);
+      const dueReviews = availablePhrases.filter((p) => this.isDueReviewPhrase(p, now));
+      const newPhrases = availablePhrases.filter(
+        (p) => (Number(p.stage_srs) || 0) === 0 && !learnedToday.has(Number(p.id))
+      );
+      const futureReviews = availablePhrases.filter(
+        (p) => this.isLearnedPhrase(p) && (Number(p.next_review) || 0) > now
+      );
 
       let studyQueue = [];
       let reviewQueue = [];
 
       if (this.settings.trainingMode === 'new') {
-        studyQueue = newPhrases.slice(0, goal);
+        studyQueue = newPhrases.slice(0, studySlotsLeft);
       } else if (this.settings.trainingMode === 'review') {
         reviewQueue =
           dueReviews.length > 0 ? dueReviews.slice(0, goal) : futureReviews.slice(0, goal);
       } else {
-        // mix: up to `goal` new + up to `goal` reviews (reviews do not fill the study quota)
-        studyQueue = newPhrases.slice(0, goal);
+        // mix: remaining daily new slots + up to `goal` due reviews
+        studyQueue = newPhrases.slice(0, studySlotsLeft);
         reviewQueue = dueReviews.slice(0, goal);
         if (studyQueue.length === 0 && reviewQueue.length === 0 && availablePhrases.length > 0) {
-          studyQueue = availablePhrases.filter((p) => p.stage_srs === 0).slice(0, goal);
+          if (studySlotsLeft > 0) {
+            studyQueue = availablePhrases
+              .filter((p) => (Number(p.stage_srs) || 0) === 0 && !learnedToday.has(Number(p.id)))
+              .slice(0, studySlotsLeft);
+          }
           if (studyQueue.length === 0) {
-            reviewQueue = availablePhrases.filter((p) => p.stage_srs > 0).slice(0, goal);
+            reviewQueue = availablePhrases.filter((p) => this.isLearnedPhrase(p)).slice(0, goal);
           }
         }
       }
@@ -551,17 +694,15 @@ export const useLearningStore = defineStore('learning', {
       const pushMarked = (p, isReview) => {
         if (!p || seen.has(p.id)) return;
         seen.add(p.id);
-        // Reviews open directly in recall (Проверить / Забыл only).
         uniqueQueue.push({
           ...p,
           awaitingRecall: !!isReview,
           isReview: !!isReview,
-          demotedThisSession: false
+          demotedThisSession: false,
+          countsTowardDaily: !isReview
         });
       };
 
-      // Study (new) cards first, then reviews — so «Пропустить» walks the study pool
-      // before landing on recall-only reviews.
       studyQueue.forEach((p) => pushMarked(p, false));
       reviewQueue.forEach((p) => pushMarked(p, true));
 
@@ -570,9 +711,13 @@ export const useLearningStore = defineStore('learning', {
       this.currentSessionIndex = 0;
       this.sessionDate = todayKey();
       this._sessionRestored = false;
+      this.sessionPlan = {
+        studyTotal: studyQueue.length,
+        reviewTotal: reviewQueue.length
+      };
       this.sessionStats = {
         completedCount: 0,
-        newLearned: 0,
+        newLearned: this.dailyProgress.newLearnedIds.length,
         reviewsDone: 0,
         deconstructedToday: 0
       };
@@ -586,11 +731,13 @@ export const useLearningStore = defineStore('learning', {
         goal: clampDailyGoal(this.settings.dailyGoal),
         index: this.currentSessionIndex,
         stats: { ...this.sessionStats },
+        plan: { ...this.sessionPlan },
         queue: this.sessionQueue.map((p) => ({
           id: p.id,
           awaitingRecall: !!p.awaitingRecall,
           isReview: !!p.isReview,
-          demotedThisSession: !!p.demotedThisSession
+          demotedThisSession: !!p.demotedThisSession,
+          countsTowardDaily: p.countsTowardDaily !== false && !p.isReview
         })),
         lastCompletedIds: (this.lastCompletedSession || []).map((p) => p.id)
       };
@@ -605,15 +752,17 @@ export const useLearningStore = defineStore('learning', {
       if (Number(saved.format) !== SESSION_FORMAT) return true;
 
       if (this.settings.trainingMode === 'mix') {
+        this.ensureDailyProgress();
         const now = Date.now();
         const goal = clampDailyGoal(this.settings.dailyGoal);
-        const dueReviews = this.phrases.filter(
-          (p) => (Number(p.stage_srs) || 0) > 0 && (Number(p.next_review) || 0) <= now
-        );
-        const reviewInQueue = saved.queue.filter((e) => e.isReview).length;
-        // Stuck pattern: due reviews exist locally, but queue never got review cards.
-        if (dueReviews.length > 0 && reviewInQueue === 0 && saved.queue.length <= goal) {
-          return true;
+        const studySlotsLeft = Math.max(0, goal - this.dailyProgress.newLearnedIds.length);
+        // Only flag stale when daily study slots remain AND due reviews exist but queue has none.
+        if (studySlotsLeft > 0) {
+          const dueReviews = this.phrases.filter((p) => this.isDueReviewPhrase(p, now));
+          const reviewInQueue = saved.queue.filter((e) => e.isReview).length;
+          if (dueReviews.length > 0 && reviewInQueue === 0 && saved.queue.length <= goal) {
+            return true;
+          }
         }
       }
       return false;
@@ -638,7 +787,8 @@ export const useLearningStore = defineStore('learning', {
             ...fresh,
             awaitingRecall: !!item.awaitingRecall,
             isReview: !!item.isReview,
-            demotedThisSession: !!item.demotedThisSession
+            demotedThisSession: !!item.demotedThisSession,
+            countsTowardDaily: item.countsTowardDaily !== false && !item.isReview && !item.demotedThisSession
           };
         })
         .filter(Boolean);
@@ -679,29 +829,32 @@ export const useLearningStore = defineStore('learning', {
         for (const entry of saved.queue) {
           const fresh = this.phrases.find((p) => p.id === entry.id);
           if (!fresh) continue;
-          const isReview =
-            entry.isReview != null ? !!entry.isReview : (Number(fresh.stage_srs) || 0) > 0;
+          // Never infer isReview from current SRS — only from the saved session role.
+          const isReview = !!entry.isReview;
           const demotedThisSession = !!entry.demotedThisSession;
-          // Active review cards always stay in recall until forgotten → normal practice.
           const awaitingRecall =
             isReview && !demotedThisSession ? true : !!entry.awaitingRecall;
+          const countsTowardDaily =
+            entry.countsTowardDaily != null
+              ? !!entry.countsTowardDaily
+              : !isReview && !demotedThisSession;
           hydrated.push({
             ...fresh,
             awaitingRecall,
             isReview,
-            demotedThisSession
+            demotedThisSession,
+            countsTowardDaily
           });
         }
         if (hydrated.length === 0) return false;
 
         // Soft-fix: study cards must not exceed daily goal
         let queue = hydrated;
-        const studyInQueue = queue.filter((p) => !p.isReview).length;
+        const studyInQueue = queue.filter((p) => p.countsTowardDaily).length;
         if (noProgress && studyInQueue > currentGoal) {
           return false;
         }
         if (!noProgress && studyInQueue > currentGoal && currentGoal >= 1) {
-          // Keep progress; drop unused study cards from the tail first
           const idx = Math.min(Math.max(0, Number(saved.index) || 0), queue.length);
           const kept = [];
           let studyKept = 0;
@@ -709,13 +862,13 @@ export const useLearningStore = defineStore('learning', {
             const item = queue[i];
             if (i < idx) {
               kept.push(item);
-              if (!item.isReview) studyKept += 1;
+              if (item.countsTowardDaily) studyKept += 1;
               continue;
             }
-            if (!item.isReview) {
+            if (item.countsTowardDaily) {
               if (studyKept >= currentGoal) continue;
               studyKept += 1;
-            } else {
+            } else if (item.isReview) {
               const reviewCap = currentGoal;
               const reviewsKept = kept.filter((p) => p.isReview).length;
               if (reviewsKept >= reviewCap) continue;
@@ -725,14 +878,26 @@ export const useLearningStore = defineStore('learning', {
           queue = kept.length ? kept : queue.slice(0, Math.max(idx + 1, 1));
         }
 
+        this.ensureDailyProgress();
         this.sessionQueue = queue;
         this.currentSessionIndex = Math.min(
           Math.max(0, Number(saved.index) || 0),
           queue.length
         );
+        const planStudy =
+          Number(saved.plan?.studyTotal) ||
+          queue.filter((p) => p.countsTowardDaily).length;
+        const planReview =
+          Number(saved.plan?.reviewTotal) ||
+          queue.filter((p) => p.isReview).length;
+        this.sessionPlan = {
+          studyTotal: planStudy,
+          reviewTotal: planReview
+        };
         this.sessionStats = {
           completedCount: Number(saved.stats?.completedCount) || 0,
-          newLearned: Number(saved.stats?.newLearned) || 0,
+          // Daily counter is source of truth for the big "X / goal" UI.
+          newLearned: this.dailyProgress.newLearnedIds.length,
           reviewsDone: Number(saved.stats?.reviewsDone) || 0,
           deconstructedToday: Number(saved.stats?.deconstructedToday) || 0
         };
@@ -771,22 +936,46 @@ export const useLearningStore = defineStore('learning', {
     },
 
     /**
-     * Repeat the current/last completed session with the same phrases
+     * Repeat the current/last completed session with the same phrases.
+     * Already-learned phrases open as reviews; daily progress is preserved.
      */
     repeatCurrentSession() {
+      this.ensureDailyProgress();
+      let ids = [];
       if (this.lastCompletedSession && this.lastCompletedSession.length > 0) {
-        const ids = this.lastCompletedSession.map((p) => p.id);
-        const refreshed = ids.map((id) => this.phrases.find((p) => p.id === id)).filter(Boolean);
-        this.sessionQueue = refreshed.length > 0 ? refreshed : [...this.lastCompletedSession];
+        ids = this.lastCompletedSession.map((p) => p.id);
       } else if (this.sessionQueue.length > 0) {
-        const ids = this.sessionQueue.map((p) => p.id);
-        const refreshed = ids.map((id) => this.phrases.find((p) => p.id === id)).filter(Boolean);
-        this.sessionQueue = refreshed.length > 0 ? refreshed : [...this.sessionQueue];
+        ids = this.sessionQueue.map((p) => p.id);
       }
+      const rebuilt = [];
+      let studyTotal = 0;
+      let reviewTotal = 0;
+      for (const id of ids) {
+        const fresh = this.phrases.find((p) => p.id === id);
+        if (!fresh) continue;
+        const isReview = this.isLearnedPhrase(fresh);
+        rebuilt.push({
+          ...fresh,
+          awaitingRecall: isReview,
+          isReview,
+          demotedThisSession: false,
+          countsTowardDaily: !isReview
+        });
+        if (isReview) reviewTotal += 1;
+        else studyTotal += 1;
+      }
+      if (rebuilt.length === 0) return;
+
+      this.sessionQueue = rebuilt;
       this.currentSessionIndex = 0;
-      this.sessionStats.completedCount = 0;
       this.sessionDate = todayKey();
-      this.sessionQueue = this.sessionQueue.map((p) => ({ ...p, awaitingRecall: false }));
+      this.sessionPlan = { studyTotal, reviewTotal };
+      this.sessionStats = {
+        completedCount: 0,
+        newLearned: this.dailyProgress.newLearnedIds.length,
+        reviewsDone: 0,
+        deconstructedToday: 0
+      };
       this.persistActiveSession();
     },
 
@@ -890,7 +1079,8 @@ export const useLearningStore = defineStore('learning', {
       const item = {
         ...current,
         awaitingRecall: false,
-        isReview: false
+        isReview: false,
+        countsTowardDaily: !!current.countsTowardDaily && !current.demotedThisSession
       };
 
       // Insert before the first pending review-recall card so we don't jump
@@ -1007,21 +1197,23 @@ export const useLearningStore = defineStore('learning', {
         reviewCount: nextReviewCount
       });
 
-      // Session role (review vs new) is fixed when the queue is built — not by current SRS stage.
+      // Session role is fixed when the queue is built.
       const qItem = this.sessionQueue[this.currentSessionIndex];
       const wasReview = !!qItem?.isReview;
+      const countsTowardDaily = !!qItem?.countsTowardDaily && !wasReview && !qItem?.demotedThisSession;
       if (qItem) {
         Object.assign(qItem, updatedData, {
           awaitingRecall: false
         });
       }
 
-      // Stats: only new study cards fill the daily goal counter; reviews are separate.
-      if (wasReview) {
+      if (wasReview || qItem?.demotedThisSession) {
         this.sessionStats.reviewsDone += 1;
-      } else {
-        this.sessionStats.completedCount += 1;
-        this.sessionStats.newLearned += 1;
+        await this.creditDailyReview();
+      } else if (countsTowardDaily) {
+        const credited = await this.creditDailyNewLearned(phrase.id);
+        if (credited) this.sessionStats.completedCount += 1;
+        this.sessionStats.newLearned = this.dailyProgress.newLearnedIds.length;
       }
 
       // Award XP to weekly leaderboard
@@ -1106,8 +1298,13 @@ export const useLearningStore = defineStore('learning', {
       }
 
       // After «Забыл» the card becomes a normal practice card for this session.
+      // Demoted reviews never fill the daily "new" quota.
       current.isReview = false;
       current.awaitingRecall = false;
+      if (wasReview || current.demotedThisSession) {
+        current.demotedThisSession = true;
+        current.countsTowardDaily = false;
+      }
 
       this.repeatInSession();
     },
@@ -1121,6 +1318,7 @@ export const useLearningStore = defineStore('learning', {
         if (only) {
           only.awaitingRecall = false;
           only.isReview = false;
+          if (only.demotedThisSession) only.countsTowardDaily = false;
         }
         this.persistActiveSession();
         return;
@@ -1132,7 +1330,10 @@ export const useLearningStore = defineStore('learning', {
         ...current,
         awaitingRecall: false,
         isReview: false,
-        demotedThisSession: !!current.demotedThisSession
+        demotedThisSession: !!current.demotedThisSession,
+        countsTowardDaily: current.demotedThisSession
+          ? false
+          : current.countsTowardDaily !== false
       };
       this.sessionQueue.splice(this.currentSessionIndex, 1);
       this.insertIntoRemainingQueue(item, { skipImmediate: true });

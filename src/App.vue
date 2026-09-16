@@ -210,7 +210,7 @@
               <!-- Session Progress Bar -->
               <div class="space-y-2 pt-2">
                 <div class="flex justify-between text-xs font-semibold text-slate-500">
-                  <span>Пройдено новых</span>
+                  <span>Пройдено новых сегодня</span>
                   <span class="text-indigo-600 font-black">{{ store.studyCompletedCount }} / {{ store.studyGoalCount }}</span>
                 </div>
                 <div class="flex gap-1.5 h-2.5">
@@ -222,8 +222,14 @@
                   />
                 </div>
                 <p class="text-[10px] text-slate-400 font-medium">
-                  Карточка {{ Math.min(store.currentSessionIndex + 1, store.sessionQueue.length || 1) }} из {{ store.sessionQueue.length || 0 }}
+                  В сессии: {{ store.sessionStudyCount }} новых
                   <span v-if="store.sessionReviewCount" class="text-amber-700 font-bold">
+                    + {{ store.sessionReviewCount }} повтор{{ store.sessionReviewCount === 1 ? '' : store.sessionReviewCount < 5 ? 'а' : 'ов' }}
+                  </span>
+                  <span v-if="store.sessionQueue.length">
+                    · карточка {{ Math.min(store.currentSessionIndex + 1, store.sessionQueue.length) }}/{{ store.sessionQueue.length }}
+                  </span>
+                  <span v-if="store.sessionReviewCount" class="text-amber-700">
                     · повторы {{ store.sessionStats.reviewsDone || 0 }}/{{ store.sessionReviewCount }}
                   </span>
                 </p>
